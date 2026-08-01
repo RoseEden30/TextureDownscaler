@@ -56,19 +56,23 @@ Menus are drawn pixel for pixel so any reduction shows, faces are what you look 
 
 Render targets, depth buffers, texture arrays, cubemaps and textures with no mips are skipped.
 
-File names come from the engine's texture loader at load time. Reading one costs a stack scan, so it only happens for textures large enough for some limit to apply, and only while a cell is loading.
+File names come from the engine's texture loader. Reading one costs a stack scan, so it only happens for textures large enough for some limit to apply, and only when a texture is created — on a loading screen, or as the game streams new areas in. Nothing runs per frame.
 
 Upgrading from 1.x: `MaxTextureSize` becomes the six entries in `[Textures]`, and `MaxDownscaleFactor` is gone — a target size says everything it said, and the two together were easy to get wrong. `[Suffix]` and `[Path]` become `[Textures]` and `[Folders]`.
 
 ## Building
 
-Needs Visual Studio 2022 and [vcpkg](https://github.com/microsoft/vcpkg) with `VCPKG_ROOT` set. From an x64 Native Tools Command Prompt:
+Needs Visual Studio 2022 with the C++ workload, and [vcpkg](https://github.com/microsoft/vcpkg) with `VCPKG_ROOT` pointing at it.
+
+Build from an **x64 Native Tools Command Prompt for VS 2022**. A plain command prompt picks up the 32 bit `cl.exe` and the configure step fails.
 
 ```
 cmake --preset release
 cmake --build build/release
 ```
 
-Set `SKYRIM_MODS_FOLDER` or `SKYRIM_FOLDER` and the build deploys the plugin for you.
+Dependencies come from the registries in `vcpkg-configuration.json` and are fetched on the first configure. CommonLibSSE is built from source, so expect several minutes that one time.
+
+Set `SKYRIM_MODS_FOLDER` to your mod manager's mods folder, or `SKYRIM_FOLDER` to the game install, and every build deploys the dll and the ini for you.
 
 Built on [CommonLibSSE NG](https://github.com/CharmedBaryon/CommonLibSSE-NG). MIT licensed.
