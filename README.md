@@ -58,8 +58,6 @@ Render targets, depth buffers, texture arrays, cubemaps and textures with no mip
 
 File names come from the engine's texture loader. Reading one costs a stack scan, so it only happens for textures large enough for some limit to apply, and only when a texture is created — on a loading screen, or as the game streams new areas in. Nothing runs per frame.
 
-Upgrading from 1.x: `MaxTextureSize` becomes the six entries in `[Textures]`, and `MaxDownscaleFactor` is gone — a target size says everything it said, and the two together were easy to get wrong. `[Suffix]` and `[Path]` become `[Textures]` and `[Folders]`.
-
 ## Building
 
 Needs Visual Studio 2022 and [vcpkg](https://github.com/microsoft/vcpkg) with `VCPKG_ROOT` set. From an x64 Native Tools Command Prompt:
