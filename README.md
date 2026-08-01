@@ -62,17 +62,13 @@ Upgrading from 1.x: `MaxTextureSize` becomes the six entries in `[Textures]`, an
 
 ## Building
 
-Needs Visual Studio 2022 with the C++ workload, and [vcpkg](https://github.com/microsoft/vcpkg) with `VCPKG_ROOT` pointing at it.
-
-Build from an **x64 Native Tools Command Prompt for VS 2022**. A plain command prompt picks up the 32 bit `cl.exe` and the configure step fails.
+Needs Visual Studio 2022 and [vcpkg](https://github.com/microsoft/vcpkg) with `VCPKG_ROOT` set. From an x64 Native Tools Command Prompt:
 
 ```
 cmake --preset release
 cmake --build build/release
 ```
 
-Dependencies come from the registries in `vcpkg-configuration.json` and are fetched on the first configure. CommonLibSSE is built from source, so expect several minutes that one time.
-
-Set `SKYRIM_MODS_FOLDER` to your mod manager's mods folder, or `SKYRIM_FOLDER` to the game install, and every build deploys the dll and the ini for you.
+Set `SKYRIM_MODS_FOLDER` or `SKYRIM_FOLDER` and the build deploys the plugin for you.
 
 Built on [CommonLibSSE NG](https://github.com/CharmedBaryon/CommonLibSSE-NG). MIT licensed.
