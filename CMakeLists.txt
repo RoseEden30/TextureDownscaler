@@ -3,7 +3,7 @@
 
 cmake_minimum_required(VERSION 3.21)
 
-project(TextureDownscaler VERSION 1.0.0 LANGUAGES CXX)
+project(TextureDownscaler VERSION 2.0.0 LANGUAGES CXX)
 
 # Output location, picked up from the environment so this file stays portable.
 # Set SKYRIM_FOLDER to a Skyrim Special Edition install, or SKYRIM_MODS_FOLDER
@@ -17,6 +17,7 @@ if(DEFINED ENV{SKYRIM_MODS_FOLDER} AND IS_DIRECTORY "$ENV{SKYRIM_MODS_FOLDER}")
 endif()
 
 find_package(CommonLibSSE CONFIG REQUIRED)
+
 add_commonlibsse_plugin(${PROJECT_NAME} AUTHOR RoseEden SOURCES plugin.cpp)
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
 target_precompile_headers(${PROJECT_NAME} PRIVATE PCH.h)

@@ -3,6 +3,7 @@
 #include <Windows.h>
 #include <d3d11.h>
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
@@ -11,6 +12,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "RE/Skyrim.h"
 #include "SKSE/SKSE.h"

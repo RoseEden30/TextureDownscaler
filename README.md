@@ -10,17 +10,55 @@ Needs Skyrim SE or AE, [SKSE64](https://skse.silverlock.org/) and [Address Libra
 
 `Data/SKSE/Plugins/TextureDownscaler.ini`
 
-**MaxTextureSize** — textures bigger than this get shrunk, smaller ones are left alone.
+### Texture types
 
-**MaxDownscaleFactor** — caps how far one texture may shrink. Never starts a downscale on its own.
+Every texture gets a maximum size according to its type. `0` leaves a type at full size.
 
-**LogLevel** — `1` logs every texture. Log lives in `My Games\Skyrim Special Edition\SKSE`.
+```ini
+[Textures]
+Diffuse=1024
+Normal=1024
+Parallax=1024
+Material=1024
+Glow=1024
+Mask=1024
+```
+
+The type comes from the end of the file name, following the texture slots Skyrim uses:
+
+| Type | Suffixes | Slot |
+|---|---|---|
+| Normal | `_n` `_msn` | normal map |
+| Glow | `_g` | emissive |
+| Parallax | `_p` | height map |
+| Mask | `_m` `_em` `_s` `_sk` `_b` | reflection mask, subsurface, backlight |
+| Material | `_rmaos` | PBR / complex material |
+| Diffuse | everything else | base colour |
+
+Normal maps and parallax height maps hold up better at lower resolution than diffuse does, so they're the usual place to save memory. For reference, [VRAMr](https://www.nexusmods.com/skyrimspecialedition/mods/91117) uses 2048 diffuse with 1024 normals and parallax for its quality preset, and 1024 diffuse with 512 for the rest as its performance preset.
+
+Suffixes are a naming convention modders follow, not something the engine enforces. A texture named against the grain counts as Diffuse, and plenty of mods don't suffix at all. Set `LogLevel=1` to see how your load order is actually classified.
+
+### Folders
+
+A folder rule overrides the type, and matches anywhere in the path. Three come set up out of the box:
+
+```ini
+[Folders]
+interface=0
+actors\character=2048
+landscape\mountains=2048
+```
+
+Menus are drawn pixel for pixel so any reduction shows, faces are what you look at from closest, and mountain cliffs are both the largest textures in the game and the ones you walk right past. A limit of 2048 rather than 0 keeps most of the memory saving: dropping 4096 to 1024 removes two mip levels, and the first accounts for four fifths of the gain.
 
 ## Notes
 
 Render targets, depth buffers, texture arrays, cubemaps and textures with no mips are skipped.
 
-Everything else is treated the same. All the plugin sees is a size and a pixel format, so there's no way to tell a face from a rock.
+File names come from the engine's texture loader at load time. Reading one costs a stack scan, so it only happens for textures large enough for some limit to apply, and only while a cell is loading.
+
+Upgrading from 1.x: `MaxTextureSize` becomes the six entries in `[Textures]`, and `MaxDownscaleFactor` is gone — a target size says everything it said, and the two together were easy to get wrong. `[Suffix]` and `[Path]` become `[Textures]` and `[Folders]`.
 
 ## Building
 
