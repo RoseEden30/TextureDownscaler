@@ -35,7 +35,7 @@ The type comes from the end of the file name, following the texture slots Skyrim
 | Material | `_rmaos` | PBR / complex material |
 | Diffuse | everything else | base colour |
 
-Normal maps and parallax height maps hold up better at lower resolution than diffuse does, so they're the usual place to save memory. For reference, [VRAMr](https://www.nexusmods.com/skyrimspecialedition/mods/91117) uses 2048 diffuse with 1024 normals and parallax for its quality preset, and 1024 diffuse with 512 for the rest as its performance preset.
+Normal maps and parallax height maps hold up better at lower resolution than diffuse does, so they're the usual place to save memory. For reference, [VRAMr](https://www.nexusmods.com/skyrimspecialedition/mods/90557) uses 2048 diffuse with 1024 normals and parallax for its quality preset, and 1024 diffuse with 512 for the rest as its performance preset.
 
 Suffixes are a naming convention modders follow, not something the engine enforces. A texture named against the grain counts as Diffuse, and plenty of mods don't suffix at all. Set `LogLevel=1` to see how your load order is actually classified.
 
@@ -48,6 +48,7 @@ A folder rule overrides the type, and matches anywhere in the path. Three come s
 interface=0
 actors\character=2048
 landscape\mountains=2048
+\greynoise.dss=0
 ```
 
 Menus are drawn pixel for pixel so any reduction shows, faces are what you look at from closest, and mountain cliffs are both the largest textures in the game and the ones you walk right past. A limit of 2048 rather than 0 keeps most of the memory saving: dropping 4096 to 1024 removes two mip levels, and the first accounts for four fifths of the gain.
