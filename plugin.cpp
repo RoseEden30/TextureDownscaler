@@ -780,11 +780,9 @@ landscape\mountains=2048
             return;
         }
 
-        // VR lays BSRenderManager out differently, so the flat runtime accessor
-        // would hand back a garbage device.
+        // Nothing here is specific to a runtime, but no VR install has been tested.
         if (REL::Module::IsVR()) {
-            SKSE::log::error("Skyrim VR isn't supported");
-            return;
+            SKSE::log::warn("Skyrim VR is untested");
         }
 
         auto* manager = RE::BSRenderManager::GetSingleton();
