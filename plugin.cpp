@@ -8,7 +8,9 @@
 // Limits are set per texture type, which means the file name has to be known,
 // and D3D11 never sees one. The engine's loader keeps the NiSourceTexture alive
 // in its call frames down to the D3D call, so the object is picked off the stack
-// and asked which file its stream is reading.
+// and asked which file its stream is reading. Some textures reach D3D with no
+// live object on the stack and stay unidentified; those get the Diffuse limit.
+// The log says how many.
 
 namespace {
     // D3D11 wants the top mip of a block-compressed texture to be a multiple of
@@ -79,6 +81,17 @@ namespace {
     std::atomic<std::uint64_t> g_downscaledCount{0};
     std::atomic<std::uint64_t> g_savedBytes{0};
 
+    // How name resolution went, reported at the end of the log.
+    struct NameStats {
+        std::atomic<std::uint64_t> resolved{0};
+        std::atomic<std::uint64_t> noObject{0};
+        std::atomic<std::uint64_t> noName{0};
+        std::atomic<std::uint64_t> fromTexture{0};
+        std::atomic<std::uint64_t> skippedStream{0};
+    };
+
+    NameStats g_names;
+
     // Lower case, and both path separators fold together.
     constexpr char Fold(char character) {
         if (character >= 'A' && character <= 'Z') return static_cast<char>(character + ('a' - 'A'));
@@ -129,6 +142,11 @@ namespace {
             case 5:  spdlog::set_level(spdlog::level::critical); break;
             default: spdlog::set_level(spdlog::level::info);     break;
         }
+
+        // Debug writes a line per texture, so flushing every one costs. It's
+        // the only way the file survives the game going down mid-line.
+        spdlog::default_logger()->flush_on(level <= 1 ? spdlog::level::debug
+                                                      : spdlog::level::info);
     }
 
     std::filesystem::path GetIniPath() {
@@ -189,7 +207,9 @@ landscape\mountains=2048
         std::error_code ec;
         if (std::filesystem::exists(path, ec) || ec) return;
 
-        std::ofstream file(path);
+        // Binary, so the line endings in the literal above don't get
+        // translated a second time.
+        std::ofstream file(path, std::ios::binary);
         if (!file) {
             SKSE::log::warn("Can't write {}", path.string());
             return;
@@ -262,13 +282,15 @@ landscape\mountains=2048
             SKSE::log::warn("[Suffix] and [Path] are gone, see [Textures] and [Folders]");
 
         std::string summary;
-        for (std::size_t i = 0; i < kCategoryCount; ++i)
-            summary += std::format("{}={} ", kCategoryNames[i], g_config.maxSize[i]);
+        for (std::size_t i = 0; i < kCategoryCount; ++i) {
+            if (i > 0) summary += ' ';
+            summary += std::format("{}={}", kCategoryNames[i], g_config.maxSize[i]);
+        }
 
         SKSE::log::info("Enabled={} {}", g_config.enabled, summary);
 
         for (const auto& folder : g_config.folders)
-            SKSE::log::info("{}={}", folder.folder, folder.maxSize);
+            SKSE::log::info("Folder {}={}", folder.folder, folder.maxSize);
 
         // A zero can't start a downscale, so it can't lower the bar for
         // resolving names either.
@@ -367,6 +389,27 @@ landscape\mountains=2048
         }
     }
 
+    // Engine vtables sit in the game image, which is enough to tell a real
+    // object from a heap value that looks like a pointer.
+    bool InGameImage(std::uintptr_t address) {
+        struct Range {
+            std::uintptr_t low  = 0;
+            std::uintptr_t high = 0;
+        };
+
+        static const Range image = [] {
+            const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(GetModuleHandleW(nullptr));
+            if (!dos) return Range{};
+
+            const auto  base = reinterpret_cast<std::uintptr_t>(dos);
+            const auto* nt   = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+
+            return Range{ base, base + nt->OptionalHeader.SizeOfImage };
+        }();
+
+        return address >= image.low && address < image.high;
+    }
+
     // Where the object was found last time. The loader's frames have a fixed
     // layout, so trying that slot first turns the search into one test.
     std::atomic<std::uint32_t> g_lastStackDepth{0};
@@ -420,6 +463,34 @@ landscape\mountains=2048
         return nullptr;
     }
 
+    // What the stack turned up may have been freed since. Its own function
+    // because a scope holding __except can't unwind objects.
+    __declspec(noinline) void TryGetName(std::uintptr_t     entry,
+                                         const void*        stream,
+                                         RE::BSFixedString& name) {
+        using DoGetName_t = bool (*)(const void*, RE::BSFixedString&);
+
+        __try {
+            reinterpret_cast<DoGetName_t>(entry)(stream, name);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+        }
+    }
+
+    // Same reason: reading a BSFixedString walks back from its data pointer
+    // into a pool header, and its owner isn't proven alive.
+    __declspec(noinline) bool TryReadText(const RE::BSFixedString& string,
+                                          std::string_view&        out) {
+        __try {
+            const char* text = string.c_str();
+            if (!text || *text == '\0') return false;
+
+            out = std::string_view(text);
+            return true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
     // BSResource::Stream::DoGetName, virtual number 10.
     RE::BSFixedString GetStreamName(const void* stream) {
         RE::BSFixedString name;
@@ -428,11 +499,17 @@ landscape\mountains=2048
         std::uintptr_t vtable = 0;
         if (!TryReadPointer(reinterpret_cast<std::uintptr_t>(stream), vtable)) return name;
 
+        // Two comparisons, and they keep the call below from jumping into
+        // whatever a dead object left at this offset.
+        if (!InGameImage(vtable)) {
+            g_names.skippedStream.fetch_add(1, std::memory_order_relaxed);
+            return name;
+        }
+
         std::uintptr_t entry = 0;
         if (!TryReadPointer(vtable + 10 * sizeof(void*), entry) || entry == 0) return name;
 
-        using DoGetName_t = bool (*)(const void*, RE::BSFixedString&);
-        reinterpret_cast<DoGetName_t>(entry)(stream, name);
+        TryGetName(entry, stream, name);
 
         return name;
     }
@@ -440,28 +517,43 @@ landscape\mountains=2048
     // Holds the name alive for as long as the caller needs it, whichever source
     // it came from.
     struct TextureName {
-        const char*       text = nullptr;
-        RE::BSFixedString owned;
+        RE::BSFixedString owned;     // from the stream
+        std::string_view  borrowed;  // from the object, valid while it lives
 
-        std::string_view view() const { return text ? std::string_view(text) : std::string_view{}; }
+        std::string_view view() const {
+            const std::string_view fromStream{owned.c_str()};
+            return fromStream.empty() ? borrowed : fromStream;
+        }
     };
 
     TextureName ResolveTextureName() {
         TextureName result;
 
         auto* texture = FindSourceTextureOnStack();
-        if (!texture) return result;
+        if (!texture) {
+            g_names.noObject.fetch_add(1, std::memory_order_relaxed);
+            return result;
+        }
 
-        // NiSourceTexture::name is only filled in once the resource exists, so
-        // it's usually still empty here. The stream the texture reads from knows
-        // the file already; it sits at 0x40, right after NiTexture.
+        // The stream the texture reads from knows the file; it sits at 0x40,
+        // right after NiTexture. NiSourceTexture::name is usually still empty
+        // this early, but not always, so it's worth asking as a fallback.
         constexpr std::size_t kStreamSlot = 0x40 / sizeof(void*);
 
         result.owned = GetStreamName(reinterpret_cast<void* const*>(texture)[kStreamSlot]);
-        result.text  = result.owned.c_str();
 
-        if (!result.text || *result.text == '\0') result.text = texture->name.c_str();
+        if (!result.view().empty()) {
+            g_names.resolved.fetch_add(1, std::memory_order_relaxed);
+            return result;
+        }
 
+        if (TryReadText(texture->name, result.borrowed)) {
+            g_names.resolved.fetch_add(1, std::memory_order_relaxed);
+            g_names.fromTexture.fetch_add(1, std::memory_order_relaxed);
+            return result;
+        }
+
+        g_names.noName.fetch_add(1, std::memory_order_relaxed);
         return result;
     }
 
@@ -492,8 +584,10 @@ landscape\mountains=2048
 
     // How many mip levels to drop off the front of the chain. Zero means leave
     // the texture alone.
-    std::uint32_t ComputeSkip(const D3D11_TEXTURE2D_DESC& desc, std::string_view name) {
-        const auto limit = LimitFor(name, CategoryOf(name));
+    std::uint32_t ComputeSkip(const D3D11_TEXTURE2D_DESC& desc,
+                              std::string_view            name,
+                              Category                    category) {
+        const auto limit = LimitFor(name, category);
         if (limit == 0) return 0;
         if (desc.Width <= limit && desc.Height <= limit) return 0;
 
@@ -580,8 +674,11 @@ landscape\mountains=2048
         if (!desc || !IsCandidate(*desc, data))
             return g_originalCreateTexture2D(self, desc, data, out);
 
-        const auto name = ResolveTextureName();
-        const auto skip = ComputeSkip(*desc, name.view());
+        const auto resolved = ResolveTextureName();
+        const auto name     = resolved.view();
+        const auto category = CategoryOf(name);
+
+        const auto skip = ComputeSkip(*desc, name, category);
         if (skip == 0) return g_originalCreateTexture2D(self, desc, data, out);
 
         D3D11_TEXTURE2D_DESC reduced = *desc;
@@ -598,7 +695,7 @@ landscape\mountains=2048
         if (FAILED(hr)) {
             // Something about this texture we didn't account for. Better a full
             // size texture than none at all.
-            SKSE::log::warn("{}x{} rejected (0x{:08X}), left as-is",
+            SKSE::log::warn("D3D refused {}x{} at reduced size (0x{:08X}), left as-is",
                             desc->Width, desc->Height, static_cast<std::uint32_t>(hr));
             return g_originalCreateTexture2D(self, desc, data, out);
         }
@@ -607,8 +704,8 @@ landscape\mountains=2048
         g_savedBytes.fetch_add(saved, std::memory_order_relaxed);
 
         SKSE::log::debug("{} {} {}x{} -> {}x{} {} KB",
-                         name.view().empty() ? "<unnamed>" : name.view(),
-                         kCategoryNames[static_cast<std::size_t>(CategoryOf(name.view()))],
+                         name.empty() ? "<unnamed>" : name,
+                         kCategoryNames[static_cast<std::size_t>(category)],
                          desc->Width, desc->Height, reduced.Width, reduced.Height, saved / 1024);
         return hr;
     }
@@ -656,10 +753,25 @@ landscape\mountains=2048
         DWORD previousProtection = 0;
         if (!VirtualProtect(entry, sizeof(void*), PAGE_READWRITE, &previousProtection)) return false;
 
-        *original = InterlockedExchangePointer(static_cast<void* volatile*>(entry), hook);
+        // The swap goes live for every thread at once, and the render thread
+        // is already creating textures, so what the hook chains into has to be
+        // readable first.
+        void* previous = *entry;
+        *original      = previous;
+
+        void* swapped = InterlockedExchangePointer(static_cast<void* volatile*>(entry), hook);
+
+        // Someone else patched the slot in between, so what we overwrote isn't
+        // what we'd chain into. Put theirs back and stay out.
+        const bool installed = swapped == previous && previous != nullptr;
+        if (!installed) {
+            InterlockedExchangePointer(static_cast<void* volatile*>(entry), swapped);
+            *original = nullptr;
+        }
+
         VirtualProtect(entry, sizeof(void*), previousProtection, &previousProtection);
 
-        return *original != nullptr;
+        return installed;
     }
 
     void InstallHooks() {
@@ -713,6 +825,25 @@ landscape\mountains=2048
         SKSE::log::info("Hooks installed");
     }
 
+    void LogNameStats() {
+        const auto resolved = g_names.resolved.load(std::memory_order_relaxed);
+        const auto noObject = g_names.noObject.load(std::memory_order_relaxed);
+        const auto noName   = g_names.noName.load(std::memory_order_relaxed);
+        const auto total    = resolved + noObject + noName;
+        if (total == 0) return;
+
+        // The rest fall back to Diffuse, so this is how much of the settings
+        // file had a say.
+        SKSE::log::info("File name found for {} of {} textures", resolved, total);
+
+        const auto fromTexture   = g_names.fromTexture.load(std::memory_order_relaxed);
+        const auto skippedStream = g_names.skippedStream.load(std::memory_order_relaxed);
+
+        SKSE::log::debug("Lookup: {} no NiSourceTexture on the stack, {} stream gave no "
+                         "name, {} from NiSourceTexture::name, {} streams rejected",
+                         noObject, noName, fromTexture, skippedStream);
+    }
+
     void LogSummary() {
         const auto count = g_downscaledCount.load(std::memory_order_relaxed);
         if (count == 0) {
@@ -723,6 +854,8 @@ landscape\mountains=2048
         const auto megabytes = static_cast<double>(g_savedBytes.load(std::memory_order_relaxed)) /
                                (1024.0 * 1024.0);
         SKSE::log::info("{} textures downscaled, ~{:.1f} MB saved", count, megabytes);
+
+        LogNameStats();
     }
 }
 
