@@ -185,10 +185,17 @@ Mask=1024
 [Folders]
 ; Maximum size for a folder, matched anywhere in the path. Wins over
 ; [Textures]. 0 leaves the folder at full size.
+
 interface=0
 actors\character=2048
+
 landscape\mountains=2048
 ;landscape\trees=2048
+;landscape=0
+
+; Flat map mods put a single very large texture here, and it doesn't survive being reduced.
+terrain=0
+
 ;plants=2048
 ;lod=0
 
