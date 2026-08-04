@@ -6,11 +6,11 @@
 // matching data. Files on disk are never touched.
 //
 // Limits are set per texture type, which means the file name has to be known,
-// and D3D11 never sees one. The engine's loader keeps the NiSourceTexture alive
-// in its call frames down to the D3D call, so the object is picked off the stack
-// and asked which file its stream is reading. Some textures reach D3D with no
-// live object on the stack and stay unidentified; those get the Diffuse limit.
-// The log says how many.
+// and D3D11 never sees one. The engine hands the NiSourceTexture to its texture
+// loader before any D3D resource exists, so that call is hooked and the object
+// kept aside for the D3D hook to ask where it came from. Textures created
+// outside that path, by another plugin, stay unidentified and get the Diffuse
+// limit. The log says how many.
 
 namespace {
     // D3D11 wants the top mip of a block-compressed texture to be a multiple of
@@ -84,9 +84,9 @@ namespace {
     // How name resolution went, reported at the end of the log.
     struct NameStats {
         std::atomic<std::uint64_t> resolved{0};
-        std::atomic<std::uint64_t> noObject{0};
-        std::atomic<std::uint64_t> noName{0};
         std::atomic<std::uint64_t> fromTexture{0};
+        std::atomic<std::uint64_t> noTexture{0};
+        std::atomic<std::uint64_t> unnamed{0};
         std::atomic<std::uint64_t> skippedStream{0};
     };
 
@@ -172,9 +172,6 @@ LogLevel=2
 ;   Glow      _g
 ;   Mask      _m _em _s _sk _b
 ;   Diffuse   everything else
-;
-; Lighter on VRAM:   Diffuse=1024 Normal=512 Parallax=512
-; Closer to vanilla: everything at 2048
 Diffuse=1024
 Normal=1024
 Parallax=1024
@@ -184,34 +181,34 @@ Mask=1024
 
 [Folders]
 ; Maximum size for a folder, matched anywhere in the path. Wins over
-; [Textures]. 0 leaves the folder at full size.
+; [Textures]. 0 leaves the folder at full size. Close a rule on both sides:
+; \lod matches \clutter\lodestone.dds as well, \lod\ does not.
 
-\!_Rudy_Misc=0
-\!SR=0
-\!!SR=0
-\interface=0 
-\effects03\newmiller\jewels2=0 
-\littlebaron=0 
-\luxonbeacon=0 
-\landscape\mountains=0 
+\interface\=0
+\sky\=0
+\terrain\=0
+\lod\=0
+\dyndolod\=0
+\lodgen\=0
+\landscape\mountains\=0
+\landscape\grass\=0
 \landscape\rocks=0
-\landscape\grass=0
-\terrain=0 
-\lod=0
-\alduin=0
-\Dragon=0
-\Durnehviir=0
-\Odahviing=0
-\Paarthurnax=0
-\actors\dragon=0
-\actors\alduin=0
-\dlc01\actors\undeaddragon=0
-\DynDOLOD=0
-\LODGen=0
-\Clothes\FurPeltCloaks=0
+\alduin\=0
+\dragon\=0
+\parthurnax\=0
+\undeaddragon\=0
+\tintmasks\=0
+\facegendata\=0
+\effects\gradients\=0
+\pbr\=2048
+\actors\character\=2048
+\armor\=2048
+\clothes\=2048
+
+; Your own rules go here.
 
 ; Vanilla folders, for reference. Deeper paths work too, for example
-; architecture\whiterun or actors\character\male.
+; \architecture\whiterun\ or \actors\character\male\.
 ;
 ; _byoh  actors  architecture  armor  blood  clothes  clutter
 ; creationclub  critters  dlc01  dlc02  dungeons  effects
@@ -428,61 +425,10 @@ Mask=1024
         return address >= image.low && address < image.high;
     }
 
-    // Where the object was found last time. The loader's frames have a fixed
-    // layout, so trying that slot first turns the search into one test.
-    std::atomic<std::uint32_t> g_lastStackDepth{0};
-
-    // The engine's texture loader holds a NiSourceTexture in its call frames all
-    // the way down to the D3D resource, so it can be found by scanning the stack
-    // for a pointer whose vtable is the one we're after. The depth it sits at
-    // moves with how the game was built, which is why this stays a search.
-    RE::NiSourceTexture* FindSourceTextureOnStack() {
-        static const std::uintptr_t wanted = RE::VTABLE_NiSourceTexture[0].address();
-        if (wanted == 0) return nullptr;
-
-        const auto* tib      = reinterpret_cast<const NT_TIB*>(::NtCurrentTeb());
-        const auto  stackTop = reinterpret_cast<std::uintptr_t>(tib->StackBase);
-        const auto  stackLow = reinterpret_cast<std::uintptr_t>(tib->StackLimit);
-
-        std::uintptr_t marker = 0;
-        const auto     origin = reinterpret_cast<std::uintptr_t>(&marker);
-
-        const auto at = [&](std::uint32_t depth) -> RE::NiSourceTexture* {
-            const auto slot = origin + depth * sizeof(void*);
-            if (slot >= stackTop) return nullptr;
-
-            std::uintptr_t candidate = 0;
-            if (!TryReadPointer(slot, candidate)) return nullptr;
-
-            // Small integers, misaligned values and stack addresses can't be the
-            // object, and skipping them saves a fault per slot.
-            if (candidate < 0x10000 || (candidate & 7u) != 0) return nullptr;
-            if (candidate >= stackLow && candidate < stackTop) return nullptr;
-
-            std::uintptr_t vtable = 0;
-            if (!TryReadPointer(candidate, vtable)) return nullptr;
-
-            return vtable == wanted ? reinterpret_cast<RE::NiSourceTexture*>(candidate) : nullptr;
-        };
-
-        if (auto* hit = at(g_lastStackDepth.load(std::memory_order_relaxed))) return hit;
-
-        // Past a few hundred words the search has left the loader's frames and
-        // can't turn up anything relevant.
-        constexpr std::uint32_t kMaxSlots = 512;
-
-        for (std::uint32_t depth = 0; depth < kMaxSlots; ++depth) {
-            if (auto* hit = at(depth)) {
-                g_lastStackDepth.store(depth, std::memory_order_relaxed);
-                return hit;
-            }
-        }
-
-        return nullptr;
-    }
-
-    // What the stack turned up may have been freed since. Its own function
-    // because a scope holding __except can't unwind objects.
+    // The name is read while the loader is still running, so the stream is live.
+    // The guard stays because another plugin can send anything through the same
+    // slot. Its own function because a scope holding __except can't unwind
+    // objects.
     __declspec(noinline) void TryGetName(std::uintptr_t     entry,
                                          const void*        stream,
                                          RE::BSFixedString& name) {
@@ -532,6 +478,29 @@ Mask=1024
         return name;
     }
 
+    // BSShaderResourceManager hands the texture to the loader before the D3D
+    // resource exists, which is the only place on this path where the object can
+    // be had for certain. Engine Fixes replaces the same slot, so whatever sits
+    // there is chained into rather than assumed to be the engine's.
+    constexpr std::size_t kSlot_LoadTexture = 26;
+
+    using LoadTexture_t = void (*)(void*, RE::NiSourceTexture*);
+
+    LoadTexture_t g_originalLoadTexture = nullptr;
+
+    // Read from the D3D hook, which runs below this call. Loads nest, hence the
+    // save and restore rather than a clear.
+    thread_local RE::NiSourceTexture* t_loadingTexture = nullptr;
+
+    void Hook_LoadTexture(void* self, RE::NiSourceTexture* texture) {
+        RE::NiSourceTexture* previous = t_loadingTexture;
+        t_loadingTexture              = texture;
+
+        g_originalLoadTexture(self, texture);
+
+        t_loadingTexture = previous;
+    }
+
     // Holds the name alive for as long as the caller needs it, whichever source
     // it came from.
     struct TextureName {
@@ -547,15 +516,14 @@ Mask=1024
     TextureName ResolveTextureName() {
         TextureName result;
 
-        auto* texture = FindSourceTextureOnStack();
+        auto* texture = t_loadingTexture;
         if (!texture) {
-            g_names.noObject.fetch_add(1, std::memory_order_relaxed);
+            g_names.noTexture.fetch_add(1, std::memory_order_relaxed);
             return result;
         }
 
         // The stream the texture reads from knows the file; it sits at 0x40,
-        // right after NiTexture. NiSourceTexture::name is usually still empty
-        // this early, but not always, so it's worth asking as a fallback.
+        // right after NiTexture.
         constexpr std::size_t kStreamSlot = 0x40 / sizeof(void*);
 
         result.owned = GetStreamName(reinterpret_cast<void* const*>(texture)[kStreamSlot]);
@@ -565,13 +533,15 @@ Mask=1024
             return result;
         }
 
+        // Streams reading out of an archive often refuse to name themselves, and
+        // the texture carries the path in that case.
         if (TryReadText(texture->name, result.borrowed)) {
             g_names.resolved.fetch_add(1, std::memory_order_relaxed);
             g_names.fromTexture.fetch_add(1, std::memory_order_relaxed);
             return result;
         }
 
-        g_names.noName.fetch_add(1, std::memory_order_relaxed);
+        g_names.unnamed.fetch_add(1, std::memory_order_relaxed);
         return result;
     }
 
@@ -792,6 +762,24 @@ Mask=1024
         return installed;
     }
 
+    void InstallTextureLoadHook() {
+        REL::Relocation<std::uintptr_t> vtable{ RE::VTABLE_BSShaderResourceManager[0] };
+
+        // Read before writing: replacing the slot and only then finding out
+        // there was nothing to chain into would leave the hook calling null.
+        const auto slot = vtable.address() + kSlot_LoadTexture * sizeof(void*);
+
+        if (*reinterpret_cast<const std::uintptr_t*>(slot) == 0) {
+            SKSE::log::warn("Couldn't hook the texture loader, file names won't be known");
+            return;
+        }
+
+        g_originalLoadTexture = reinterpret_cast<LoadTexture_t>(
+            vtable.write_vfunc(kSlot_LoadTexture, Hook_LoadTexture));
+
+        SKSE::log::debug("Texture loader hooked");
+    }
+
     void InstallHooks() {
         if (!g_config.enabled) {
             SKSE::log::info("Disabled in the settings");
@@ -802,6 +790,10 @@ Mask=1024
         if (REL::Module::IsVR()) {
             SKSE::log::warn("Skyrim VR is untested");
         }
+
+        // Live before the first texture reaches the D3D hook, otherwise the
+        // early ones have no name to go on.
+        InstallTextureLoadHook();
 
         auto* manager = RE::BSRenderManager::GetSingleton();
         if (!manager) {
@@ -842,10 +834,10 @@ Mask=1024
     }
 
     void LogNameStats() {
-        const auto resolved = g_names.resolved.load(std::memory_order_relaxed);
-        const auto noObject = g_names.noObject.load(std::memory_order_relaxed);
-        const auto noName   = g_names.noName.load(std::memory_order_relaxed);
-        const auto total    = resolved + noObject + noName;
+        const auto resolved  = g_names.resolved.load(std::memory_order_relaxed);
+        const auto noTexture = g_names.noTexture.load(std::memory_order_relaxed);
+        const auto unnamed   = g_names.unnamed.load(std::memory_order_relaxed);
+        const auto total     = resolved + noTexture + unnamed;
         if (total == 0) return;
 
         // The rest fall back to Diffuse, so this is how much of the settings
@@ -855,9 +847,9 @@ Mask=1024
         const auto fromTexture   = g_names.fromTexture.load(std::memory_order_relaxed);
         const auto skippedStream = g_names.skippedStream.load(std::memory_order_relaxed);
 
-        SKSE::log::debug("Lookup: {} no NiSourceTexture on the stack, {} stream gave no "
-                         "name, {} from NiSourceTexture::name, {} streams rejected",
-                         noObject, noName, fromTexture, skippedStream);
+        SKSE::log::debug("Lookup: {} named by the texture rather than its stream, {} created "
+                         "outside the loader, {} left unnamed, {} streams rejected",
+                         fromTexture, noTexture, unnamed, skippedStream);
     }
 
     void LogSummary() {
