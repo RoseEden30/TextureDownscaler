@@ -56,8 +56,9 @@ namespace {
     };
 
     struct FolderRule {
-        std::string   folder;  // lower case, backslashes
-        std::uint32_t maxSize;
+        std::string             folder;   // lower case, backslashes
+        std::uint32_t           maxSize;
+        std::optional<Category> category; // unset applies to every type
     };
 
     struct Config {
@@ -183,6 +184,12 @@ Mask=1024
 ; Maximum size for a folder, matched anywhere in the path. Wins over
 ; [Textures]. 0 leaves the folder at full size. Close a rule on both sides:
 ; \lod matches \clutter\lodestone.dds as well, \lod\ does not.
+;
+; A rule can start with a texture type, and then it only applies to that
+; type. Rules are read from top to bottom and the first one that matches
+; wins, so these two keep doors at full size except for their normal maps:
+;   Normal:door=1024
+;   door=0
 
 \interface\=0
 \sky\=0
@@ -190,19 +197,29 @@ Mask=1024
 \lod\=0
 \dyndolod\=0
 \lodgen\=0
+Normal:\landscape\mountains\=2048
 \landscape\mountains\=0
-\landscape\grass\=0
-\landscape\rocks=0
+Normal:grass=2048
+grass=0
+Normal:rocks=2048
+rocks=0
+Normal:\alduin\=2048
 \alduin\=0
+Normal:\dragon\=2048
 \dragon\=0
+Normal:\parthurnax\=2048
 \parthurnax\=0
+Normal:\undeaddragon\=2048
 \undeaddragon\=0
 \tintmasks\=0
 \facegendata\=0
 \effects\gradients\=0
+Normal:\pbr\=1024
 \pbr\=2048
 \actors\character\=2048
+Normal:\armor\=1024
 \armor\=2048
+Normal:\clothes\=1024
 \clothes\=2048
 
 ; Your own rules go here.
@@ -245,6 +262,34 @@ Mask=1024
         return static_cast<std::uint32_t>(value);
     }
 
+    std::optional<Category> CategoryFromName(std::string_view name) {
+        for (std::size_t i = 0; i < kCategoryCount; ++i)
+            if (EqualsFolded(name, kCategoryNames[i])) return static_cast<Category>(i);
+
+        return std::nullopt;
+    }
+
+    // How a rule reads back in the log, prefix included.
+    std::string RuleName(const FolderRule& rule) {
+        if (!rule.category) return rule.folder;
+
+        return std::format("{}:{}",
+                           kCategoryNames[static_cast<std::size_t>(*rule.category)], rule.folder);
+    }
+
+    // A rule can be narrowed to one texture type, written Normal:folder. Takes
+    // the prefix off and returns false if it doesn't name a type.
+    bool SplitCategory(std::string_view& folder, std::optional<Category>& category) {
+        const auto colon = folder.find(':');
+        if (colon == std::string_view::npos) return true;
+
+        category = CategoryFromName(folder.substr(0, colon));
+        if (!category) return false;
+
+        folder.remove_prefix(colon + 1);
+        return true;
+    }
+
     void ReadFolders(const CSimpleIniA& ini, Config& config) {
         CSimpleIniA::TNamesDepend keys;
         if (!ini.GetAllKeys("Folders", keys)) return;
@@ -252,12 +297,39 @@ Mask=1024
         keys.sort(CSimpleIniA::Entry::LoadOrder());
 
         for (const auto& key : keys) {
-            std::string folder;
-            for (const char* c = key.pItem; *c; ++c) folder.push_back(Fold(*c));
+            std::string entry;
+            for (const char* c = key.pItem; *c; ++c) entry.push_back(Fold(*c));
+
+            std::optional<Category> category;
+            std::string_view        folder{entry};
+
+            if (!SplitCategory(folder, category)) {
+                SKSE::log::warn("{} isn't a texture type, rule ignored", key.pItem);
+                continue;
+            }
+
             if (folder.empty()) continue;
 
-            const auto size = ClampSize(ini.GetLongValue("Folders", key.pItem, 0), folder);
-            config.folders.emplace_back(std::move(folder), size);
+            const auto size = ClampSize(ini.GetLongValue("Folders", key.pItem, 0), key.pItem);
+            config.folders.emplace_back(std::string(folder), size, category);
+        }
+    }
+
+    // A rule an earlier one already covers can never fire.
+    void WarnShadowedFolders(const Config& config) {
+        for (std::size_t i = 0; i < config.folders.size(); ++i) {
+            const auto& rule = config.folders[i];
+
+            for (std::size_t j = 0; j < i; ++j) {
+                const auto& earlier = config.folders[j];
+
+                if (earlier.category && earlier.category != rule.category) continue;
+                if (!ContainsFolded(rule.folder, earlier.folder)) continue;
+
+                SKSE::log::warn("{} never applies, {} above it matches first",
+                                RuleName(rule), RuleName(earlier));
+                break;
+            }
         }
     }
 
@@ -305,7 +377,9 @@ Mask=1024
         SKSE::log::info("Enabled={} {}", g_config.enabled, summary);
 
         for (const auto& folder : g_config.folders)
-            SKSE::log::info("Folder {}={}", folder.folder, folder.maxSize);
+            SKSE::log::info("Folder {}={}", RuleName(folder), folder.maxSize);
+
+        WarnShadowedFolders(g_config);
 
         // A zero can't start a downscale, so it can't lower the bar for
         // resolving names either.
@@ -562,10 +636,13 @@ Mask=1024
         return Category::Diffuse;
     }
 
-    // A folder rule wins over the type: it's the more specific of the two.
+    // A folder rule wins over the type: it's the more specific of the two. The
+    // type check comes first, it's cheaper than the substring search.
     std::uint32_t LimitFor(std::string_view name, Category category) {
-        for (const auto& folder : g_config.folders)
+        for (const auto& folder : g_config.folders) {
+            if (folder.category && *folder.category != category) continue;
             if (ContainsFolded(name, folder.folder)) return folder.maxSize;
+        }
 
         return g_config.maxSize[static_cast<std::size_t>(category)];
     }

@@ -6,6 +6,19 @@ Textures ship as a stack of images, each half the size of the one above. This pl
 
 Needs Skyrim SE, AE or VR, [SKSE64](https://skse.silverlock.org/) and [Address Library](https://www.nexusmods.com/skyrimspecialedition/mods/32444). On VR, the [VR Address Library](https://www.nexusmods.com/skyrimspecialedition/mods/58101) is required, and the plugin is untested there.
 
+## Presets
+
+The installer offers four starting points. Each one is just a settings file, so you can edit it afterwards.
+
+| Preset | Diffuse | Other types |
+|---|---|---|
+| Quality | 2048 | 2048 |
+| Balanced | 1024 | 1024 |
+| Performance | 1024 | 512 |
+| Custom | full size | full size |
+
+All of them leave interface, LOD, sky, terrain, faces, dragons and landscape at full size. Custom does nothing at all until you set your own limits.
+
 ## Settings
 
 `Data/SKSE/Plugins/TextureDownscaler.ini`
@@ -35,17 +48,27 @@ The type comes from the end of the file name:
 
 Normal maps and height maps hold up better at lower resolution than diffuse does, so they're the usual place to save memory.
 
-A folder rule overrides the type, and matches anywhere in the path:
+### Folders
+
+A folder rule overrides the type and matches anywhere in the path.
 
 ```ini
 [Folders]
 \interface\=0
 \lod\=0
 \actors\character\=2048
-\landscape\mountains\=2048
 ```
 
-Close a rule on both sides where you can: `\lod` matches `\clutter\lodestone.dds` as well, `\lod\` does not.
+The match is on the path as text, so a rule doesn't have to name a real folder. Skyrim has no doors folder, but `door` still catches every door texture wherever it lives. Close a rule on both sides when the fragment is short: `\lod` matches `\clutter\lodestone.dds` as well, `\lod\` does not.
+
+Put a type in front and the rule only covers that type. Rules are read from top to bottom and the first one that matches wins, so the narrow rule goes above the broad one:
+
+```ini
+Normal:door=1024
+door=0
+```
+
+Those two keep doors at full size except for their normal maps. A rule that an earlier one already covers can never fire, and gets reported in the log when the settings are read.
 
 Set `LogLevel=1` to see how your load order is actually classified.
 

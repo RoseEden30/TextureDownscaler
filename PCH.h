@@ -10,6 +10,7 @@
 #include <format>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
