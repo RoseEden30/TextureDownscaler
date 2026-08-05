@@ -770,10 +770,9 @@ weapons\wooden
 
     // textures\armor\daedric\cuirass.dds becomes armor\daedric, which is how
     // the scan names the same folder. Empty when the file sits at the root or
-    // the name doesn't look like a path.
+    // the name doesn't look like a path. The name arrives folded.
     bool FolderFromName(std::string_view name, std::string& folder) {
-        folder.clear();
-        for (const auto c : name) folder.push_back(Fold(c));
+        folder.assign(name);
 
         constexpr std::string_view kRoot = "textures\\";
 

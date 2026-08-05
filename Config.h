@@ -99,6 +99,16 @@ constexpr char Fold(char character) {
 bool EqualsFolded(std::string_view left, std::string_view right);
 bool ContainsFolded(std::string_view haystack, std::string_view needle);
 
+// Folds text into buffer and returns a view of it. The hook needs the folded
+// form three times over, so it pays for it once instead of folding inside
+// every comparison.
+std::string_view FoldInto(std::string_view text, std::string& buffer);
+
+// Both sides already folded, which lets the search drop to a plain memcmp
+// instead of comparing a character at a time. Every rule read from the ini or
+// set through the menu is stored folded, so a folded name is all it takes.
+bool Contains(std::string_view haystack, std::string_view needle);
+
 std::optional<Category> CategoryFromName(std::string_view name);
 
 // How a rule reads back, prefix included.

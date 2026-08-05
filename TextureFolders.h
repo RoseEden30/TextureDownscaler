@@ -32,7 +32,7 @@ std::string FolderRuleText(std::string_view path);
 // Counts one texture against the folder its file sits in. Called from the
 // engine's loader threads, and only while g_trackUsedFolders is set, for every
 // texture that comes from a file whatever its size, so the tally reflects the
-// load order rather than the settings.
+// load order rather than the settings. The name must already be folded.
 void RecordUsedFolder(std::string_view name);
 
 // Throws the tally away. The counts live in memory only.

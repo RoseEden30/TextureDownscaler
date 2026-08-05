@@ -278,18 +278,19 @@ namespace {
         SuffixEntry{"_b", Category::Mask},
     };
 
+    // Takes the name already folded, so the suffix and rule comparisons below
+    // are plain byte matches.
     Category CategoryOf(std::string_view name) {
         auto stem = name;
 
-        const auto slash = stem.find_last_of("\\/");
+        const auto slash = stem.find_last_of('\\');
         if (slash != std::string_view::npos) stem = stem.substr(slash + 1);
 
         const auto dot = stem.rfind('.');
         if (dot != std::string_view::npos) stem = stem.substr(0, dot);
 
         for (const auto& entry : kSuffixes)
-            if (stem.size() > entry.suffix.size() &&
-                EqualsFolded(stem.substr(stem.size() - entry.suffix.size()), entry.suffix))
+            if (stem.size() > entry.suffix.size() && stem.ends_with(entry.suffix))
                 return entry.category;
 
         return Category::Diffuse;
@@ -300,7 +301,7 @@ namespace {
     std::uint32_t LimitFor(const Config& config, std::string_view name, Category category) {
         for (const auto& folder : config.folders) {
             if (folder.category && *folder.category != category) continue;
-            if (ContainsFolded(name, folder.folder)) return folder.maxSize;
+            if (Contains(name, folder.folder)) return folder.maxSize;
         }
 
         return config.maxSize[static_cast<std::size_t>(category)];
@@ -369,6 +370,10 @@ namespace {
                                        D3D11_RESOURCE_MISC_GENERATE_MIPS;
         if (desc.MiscFlags & kRejectedMisc) return false;
 
+        // A texture the CPU can still write to gets rewritten at runtime by code
+        // that works out offsets from the size it was created at.
+        if (desc.CPUAccessFlags != 0) return false;
+
         // Dynamic and staging textures get rewritten at runtime by code that
         // works out offsets from the original size.
         return desc.Usage == D3D11_USAGE_DEFAULT || desc.Usage == D3D11_USAGE_IMMUTABLE;
@@ -412,7 +417,11 @@ namespace {
         if (!reduce && !track) return g_originalCreateTexture2D(self, desc, data, out);
 
         const auto resolved = ResolveTextureName();
-        const auto name     = resolved.view();
+
+        // Folded once here. Everything downstream compares against rules that
+        // are already folded, so nothing has to fold again per comparison.
+        thread_local std::string buffer;
+        const auto               name = FoldInto(resolved.view(), buffer);
 
         // Counted whatever the size, so the menu shows what this load order
         // uses rather than only what the current limits reach.
@@ -443,8 +452,11 @@ namespace {
         if (FAILED(hr)) {
             // Something about this texture we didn't account for. Better a full
             // size texture than none at all.
-            SKSE::log::warn("D3D refused {}x{} at reduced size (0x{:08X}), left as-is",
-                            desc->Width, desc->Height, static_cast<std::uint32_t>(hr));
+            SKSE::log::warn("D3D refused {} at {}x{} mip {} format {} (0x{:08X}), left as-is",
+                            name.empty() ? "<unnamed>" : name,
+                            reduced.Width, reduced.Height, reduced.MipLevels,
+                            static_cast<std::uint32_t>(desc->Format),
+                            static_cast<std::uint32_t>(hr));
             return g_originalCreateTexture2D(self, desc, data, out);
         }
 
@@ -477,13 +489,20 @@ namespace {
 
         // Views get described from the size the caller thinks the texture has,
         // so the levels it asks for can run past the chain we actually made.
+        // Trimming the count is the normal case for a reduced texture. A first
+        // level past the end is not, and worth a word.
         D3D11_SHADER_RESOURCE_VIEW_DESC clamped = *desc;
         bool                            changed = false;
 
         if (clamped.Texture2D.MostDetailedMip >= textureDesc.MipLevels) {
+            SKSE::log::debug("View asked for mip {} of a {} level {}x{} texture",
+                             clamped.Texture2D.MostDetailedMip, textureDesc.MipLevels,
+                             textureDesc.Width, textureDesc.Height);
+
             clamped.Texture2D.MostDetailedMip = textureDesc.MipLevels - 1;
             changed                           = true;
         }
+
         if (clamped.Texture2D.MipLevels != static_cast<UINT>(-1) &&
             clamped.Texture2D.MostDetailedMip + clamped.Texture2D.MipLevels > textureDesc.MipLevels) {
             clamped.Texture2D.MipLevels = textureDesc.MipLevels - clamped.Texture2D.MostDetailedMip;
@@ -491,7 +510,15 @@ namespace {
         }
 
         if (!changed) return g_originalCreateSRV(self, resource, desc, out);
-        return g_originalCreateSRV(self, resource, &clamped, out);
+
+        const HRESULT hr = g_originalCreateSRV(self, resource, &clamped, out);
+
+        if (FAILED(hr))
+            SKSE::log::warn("D3D refused a clamped view on a {}x{} texture (0x{:08X})",
+                            textureDesc.Width, textureDesc.Height,
+                            static_cast<std::uint32_t>(hr));
+
+        return hr;
     }
 
     bool PatchSlot(ID3D11Device* device, std::size_t slot, void* hook, void** original) {
@@ -586,10 +613,11 @@ void InstallHooks() {
         SKSE::log::error("Couldn't hook CreateTexture2D");
 
         // Leaving the view hook in place would clamp views for no reason.
+        // Left pointing at the real function on purpose: a call already inside
+        // the view hook on another thread would otherwise chain into null.
         void* discarded = nullptr;
         PatchSlot(device, kSlot_CreateShaderResourceView,
                   reinterpret_cast<void*>(g_originalCreateSRV), &discarded);
-        g_originalCreateSRV = nullptr;
         return;
     }
 

@@ -312,6 +312,20 @@ bool ContainsFolded(std::string_view haystack, std::string_view needle) {
     return false;
 }
 
+std::string_view FoldInto(std::string_view text, std::string& buffer) {
+    buffer.clear();
+    buffer.reserve(text.size());
+
+    for (const auto character : text) buffer.push_back(Fold(character));
+
+    return buffer;
+}
+
+bool Contains(std::string_view haystack, std::string_view needle) {
+    if (needle.empty()) return false;
+    return haystack.find(needle) != std::string_view::npos;
+}
+
 std::optional<Category> CategoryFromName(std::string_view name) {
     for (std::size_t i = 0; i < kCategoryCount; ++i)
         if (EqualsFolded(name, kCategoryNames[i])) return static_cast<Category>(i);
