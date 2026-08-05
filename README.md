@@ -2,13 +2,13 @@
 
 SKSE plugin that lowers Skyrim's video memory usage by loading textures at a smaller size.
 
-Textures ship as a stack of images, each half the size of the one above. This plugin skips the top of the stack, so a 4096 texture loaded at 1024 uses a sixteenth of the memory. Nothing is resampled and no file on disk is touched.
+A .dds file holds a stack of images, each one half the size of the one above. This plugin skips the top of the stack and hands the game the level below, so a 4096 texture loaded at 1024 takes a sixteenth of the memory. Nothing is resampled and no file on disk is touched.
 
 Needs Skyrim SE, AE or VR, [SKSE64](https://skse.silverlock.org/) and [Address Library](https://www.nexusmods.com/skyrimspecialedition/mods/32444). On VR, the [VR Address Library](https://www.nexusmods.com/skyrimspecialedition/mods/58101) is required, and the plugin is untested there.
 
 ## Presets
 
-The installer offers four starting points. Each one is just a settings file, so you can edit it afterwards.
+The installer offers four starting points. Each one is only a settings file, so nothing stops you editing it afterwards.
 
 | Preset | Diffuse | Other types |
 |---|---|---|
@@ -17,15 +17,15 @@ The installer offers four starting points. Each one is just a settings file, so 
 | Performance | 1024 | 512 |
 | Custom | full size | full size |
 
-All of them leave interface, LOD, sky, terrain, faces, dragons and landscape at full size. Custom does nothing at all until you set your own limits.
+All three working presets leave the interface, LOD, sky, terrain, face tints and fur shells alone. Landscape, trees and dragons keep their diffuse textures at full size and only have their normal maps capped.
 
-Quality also leaves armour, clothing, PBR material maps and character textures untouched. Performance drops every type other than diffuse to 512 and caps character textures at 1024.
+Quality also leaves armour, clothing, PBR material maps and character textures untouched. Performance drops every type other than diffuse to 512 and caps character textures at 1024. Custom does nothing until you set your own limits.
 
 ## Settings
 
 `Data/SKSE/Plugins/TextureDownscaler.ini`
 
-Every texture gets a maximum size according to its type. `0` leaves a type at full size.
+Each texture gets a maximum size according to its type. `0` leaves a type at full size.
 
 ```ini
 [Textures]
@@ -48,47 +48,47 @@ The type comes from the end of the file name:
 | Mask | `_m` `_em` `_s` `_sk` `_b` |
 | Diffuse | everything else |
 
-Normal maps and height maps hold up better at lower resolution than diffuse does, so they're the usual place to save memory.
+Normal maps and height maps hold up better at low resolution than diffuse does, so they are the usual place to save memory.
 
 ### Folders
 
-A folder rule overrides the type and matches anywhere in the path.
+A folder rule overrides the type limit. It matches anywhere in the path, file name included.
 
 ```ini
 [Folders]
+_shell=0
 \interface\=0
-\lod\=0
 \actors\character\=2048
 ```
 
-The match is on the path as text, so a rule doesn't have to name a real folder. Skyrim has no doors folder, but `door` still catches every door texture wherever it lives. Close a rule on both sides when the fragment is short: `\lod` matches `\clutter\lodestone.dds` as well, `\lod\` does not.
+Since the match is plain text, a rule doesn't have to name a real folder. Skyrim has no doors folder, but `door` catches every door texture wherever it lives, and `_shell` reaches the fur shell textures of every mod that adds them.
 
-Put a type in front and the rule only covers that type. Rules are read from top to bottom and the first one that matches wins, so the narrow rule goes above the broad one:
+Put a type in front and the rule only covers that type. Rules are read from top to bottom and the first match wins, so the narrow rule goes above the broad one:
 
 ```ini
 Normal:door=1024
 door=0
 ```
 
-Those two keep doors at full size except for their normal maps. A rule that an earlier one already covers can never fire, and gets reported in the log when the settings are read.
+Those two keep doors at full size except for their normal maps.
 
 `LogLevel=1` writes a line for each texture loaded at a reduced size, with its name and the type it was read as.
 
 ## In-game menu
 
-If [SKSE Menu Framework](https://www.nexusmods.com/skyrimspecialedition/mods/120352) is installed, the settings are also editable in game, under TextureDownscaler. Changes take effect on the next texture load and can be written back to the ini from any page.
+With [SKSE Menu Framework](https://www.nexusmods.com/skyrimspecialedition/mods/120352) installed, the settings can also be edited in game, under TextureDownscaler. Changes apply to the next texture that loads and can be written back to the ini from any page.
 
-The menu is entirely optional. Without it the plugin behaves exactly as it did before, and none of its code runs.
+The menu is optional. Without it the plugin behaves exactly as it did before, and none of its code runs.
 
-`TrackUsedFolders=1` counts the textures your game loads, per folder, and fills the `Used` column. It is off by default because it costs a little on every texture load, and it can be switched on and off from the page itself.
+`TrackUsedFolders=1` counts the textures your game loads, per folder, and fills the `Used` column. It is off by default because it costs a little on every texture load, and the page can switch it on and off.
 
-`Browse folders` lists every folder under `Data\textures`, along with the ones the base game keeps in its archives, and shows how many textures your game has actually loaded from each. It is the quickest way to find out where a rule is worth adding for your own load order.
+`Browse folders` lists every folder under `Data\textures` along with the ones the base game keeps in its archives, and shows how many textures have been loaded from each. It is the quickest way to see where a rule is worth adding for your own load order.
 
 ## Notes
 
 Render targets, depth buffers, texture arrays, cubemaps and textures with no mips are skipped.
 
-File names come from the engine's texture loader, which is hooked so the texture being built is known by the time D3D is called. Nothing runs per frame. Some textures arrive without a name and fall back to the Diffuse limit, so a folder rule won't reach them.
+File names come from the engine's texture loader, which is hooked so that the texture being built is known by the time D3D is called.
 
 ## Building
 
