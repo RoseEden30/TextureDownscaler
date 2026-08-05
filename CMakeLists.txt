@@ -3,7 +3,7 @@
 
 cmake_minimum_required(VERSION 3.21)
 
-project(TextureDownscaler VERSION 2.3.0 LANGUAGES CXX)
+project(TextureDownscaler VERSION 2.3.1 LANGUAGES CXX)
 
 # Name of the folder created under the mods folder. Separate from the project
 # name so it can carry a space without renaming the files.

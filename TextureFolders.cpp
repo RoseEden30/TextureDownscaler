@@ -3,6 +3,7 @@
 #include "Config.h"
 
 #include <atomic>
+#include <exception>
 #include <filesystem>
 #include <map>
 #include <mutex>
@@ -693,8 +694,13 @@ weapons\wooden
         }
     }
 
+    // Not string(): that one converts to the system code page and throws on any
+    // character it can't map, which a mod folder can easily contain. Fold only
+    // touches ASCII, so the rest of a UTF-8 sequence passes through untouched.
     std::string FoldedPath(const std::filesystem::path& path) {
-        auto text = path.string();
+        const auto native = path.u8string();
+
+        std::string text(reinterpret_cast<const char*>(native.data()), native.size());
         for (auto& c : text) c = Fold(c);
         return text;
     }
@@ -704,7 +710,7 @@ weapons\wooden
         return extension == ".dds";
     }
 
-    void Scan(std::stop_token stop) {
+    void ScanFolders(std::stop_token stop) {
         std::map<std::string, std::uint32_t> counts;
         AddArchivedFolders(counts);
 
@@ -741,6 +747,18 @@ weapons\wooden
         g_ready.store(true, std::memory_order_release);
 
         SKSE::log::info("Folder list ready, {} directories", g_folders.size());
+    }
+
+    // Anything escaping here would take the process down without a crash log,
+    // since this runs on a thread of its own.
+    void Scan(std::stop_token stop) {
+        try {
+            ScanFolders(std::move(stop));
+        } catch (const std::exception& e) {
+            SKSE::log::warn("Folder scan stopped: {}", e.what());
+        } catch (...) {
+            SKSE::log::warn("Folder scan stopped");
+        }
     }
 
     // Joined when the DLL unloads. The stop token keeps that from waiting on a

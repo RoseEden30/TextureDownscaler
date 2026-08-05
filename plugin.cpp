@@ -20,7 +20,7 @@
 
 namespace {
     // Touched from the render thread, read when a save is loaded.
-    std::atomic<std::uint64_t> g_downscaledCount{0};
+    std::atomic<std::uint64_t> g_reducedCount{0};
     std::atomic<std::uint64_t> g_savedBytes{0};
 
     // How name resolution went, reported at the end of the log.
@@ -375,7 +375,7 @@ namespace {
     }
 
     // Under the smallest limit in the settings, no rule can have a say.
-    bool WorthDownscaling(const D3D11_TEXTURE2D_DESC& desc) {
+    bool WorthReducing(const D3D11_TEXTURE2D_DESC& desc) {
         const auto smallest = g_smallestLimit.load(std::memory_order_relaxed);
         if (smallest == 0) return false;
         return desc.Width > smallest || desc.Height > smallest;
@@ -404,12 +404,12 @@ namespace {
         if (!desc || !IsFromFile(*desc, data))
             return g_originalCreateTexture2D(self, desc, data, out);
 
-        const bool downscale = WorthDownscaling(*desc);
+        const bool reduce = WorthReducing(*desc);
         const bool track     = g_trackUsedFolders.load(std::memory_order_relaxed);
 
         // Nothing to decide and nobody to tell, so the name is never looked up.
         // This is the path every texture takes when the menu isn't installed.
-        if (!downscale && !track) return g_originalCreateTexture2D(self, desc, data, out);
+        if (!reduce && !track) return g_originalCreateTexture2D(self, desc, data, out);
 
         const auto resolved = ResolveTextureName();
         const auto name     = resolved.view();
@@ -418,7 +418,7 @@ namespace {
         // uses rather than only what the current limits reach.
         if (track) RecordUsedFolder(name);
 
-        if (!downscale) return g_originalCreateTexture2D(self, desc, data, out);
+        if (!reduce) return g_originalCreateTexture2D(self, desc, data, out);
 
         const auto category = CategoryOf(name);
 
@@ -448,7 +448,7 @@ namespace {
             return g_originalCreateTexture2D(self, desc, data, out);
         }
 
-        g_downscaledCount.fetch_add(1, std::memory_order_relaxed);
+        g_reducedCount.fetch_add(1, std::memory_order_relaxed);
         g_savedBytes.fetch_add(saved, std::memory_order_relaxed);
 
         SKSE::log::debug("{} {} {}x{} -> {}x{} {} KB",
@@ -620,15 +620,15 @@ namespace {
     }
 
     void LogSummary() {
-        const auto count = g_downscaledCount.load(std::memory_order_relaxed);
+        const auto count = g_reducedCount.load(std::memory_order_relaxed);
         if (count == 0) {
-            SKSE::log::info("Nothing downscaled yet");
+            SKSE::log::info("Nothing loaded at a reduced size yet");
             return;
         }
 
         const auto megabytes = static_cast<double>(g_savedBytes.load(std::memory_order_relaxed)) /
                                (1024.0 * 1024.0);
-        SKSE::log::info("{} textures downscaled, ~{:.1f} MB saved", count, megabytes);
+        SKSE::log::info("{} textures loaded at a reduced size, ~{:.1f} MB saved", count, megabytes);
 
         LogNameStats();
     }

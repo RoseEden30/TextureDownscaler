@@ -20,7 +20,39 @@ namespace {
 
     // Must stay identical to the .ini shipped with the plugin. Written back
     // when the user's copy is missing.
-constexpr std::string_view kDefaultIni = R"INI([General]
+constexpr std::string_view kDefaultIni = R"INI(; Settings are read when the game starts. The in-game menu can change them
+; without a restart, but a texture already in memory keeps the size it was
+; loaded at.
+;
+; The texture type is read from the end of the file name:
+;   Normal    _n _msn
+;   Parallax  _p
+;   Material  _rmaos          (PBR / complex material)
+;   Glow      _g
+;   Mask      _m _em _s _sk _b
+;   Diffuse   everything else
+;
+; A folder rule sets a limit for a whole folder and wins over the type. 0
+; leaves it at full size. The match is anywhere in the path, file name
+; included, so close a rule on both sides or it catches more than you meant:
+; sky also matches actors\character\facegendata\facetint\skyrim.esm, \sky\
+; does not.
+;
+; A rule can start with a type, and then it only applies to that type. Rules
+; are read from top to bottom and the first match wins, so these two keep
+; doors at full size except for their normal maps:
+;   Normal:door=1024
+;   door=0
+;
+; Vanilla folders under textures, for reference. Deeper paths work too, for
+; example \architecture\whiterun\ or \actors\character\male\:
+;
+;   _byoh  actors  architecture  armor  blood  clothes  clutter
+;   creationclub  critters  dlc01  dlc02  dungeons  effects
+;   furniture  impactdecals  interface  landscape  lod  plants  puddle
+;   shadertests  sky  terrain  test  trap  water  weapons
+
+[General]
 ; 0 turns the plugin off.
 Enabled=1
 ; 0=Trace 1=Debug 2=Info 3=Warn 4=Error 5=Fatal
@@ -32,13 +64,6 @@ TrackUsedFolders=0
 
 [Textures]
 ; Maximum size per texture type. 0 leaves that type at full size.
-; The type is read from the end of the file name:
-;   Normal    _n _msn
-;   Parallax  _p
-;   Material  _rmaos          (PBR / complex material)
-;   Glow      _g
-;   Mask      _m _em _s _sk _b
-;   Diffuse   everything else
 Diffuse=1024
 Normal=1024
 Parallax=1024
@@ -47,16 +72,7 @@ Glow=1024
 Mask=1024
 
 [Folders]
-; Maximum size for a folder, matched anywhere in the path. Wins over
-; [Textures]. 0 leaves the folder at full size. Close a rule on both sides:
-; \lod matches \clutter\lodestone.dds as well, \lod\ does not.
-;
-; A rule can start with a texture type, and then it only applies to that
-; type. Rules are read from top to bottom and the first one that matches
-; wins, so these two keep doors at full size except for their normal maps:
-;   Normal:door=1024
-;   door=0
-
+_shell=0
 \interface\=0
 \sky\=0
 \terrain\=0
@@ -69,6 +85,8 @@ Normal:grass=2048
 grass=0
 Normal:rocks=2048
 rocks=0
+Normal:\landscape\trees\=2048
+\landscape\trees\=0
 Normal:\alduin\=2048
 \alduin\=0
 Normal:\dragon\=2048
@@ -87,16 +105,6 @@ Normal:\armor\=1024
 \armor\=2048
 Normal:\clothes\=1024
 \clothes\=2048
-
-; Your own rules go here.
-
-; Vanilla folders, for reference. Deeper paths work too, for example
-; \architecture\whiterun\ or \actors\character\male\.
-;
-; _byoh  actors  architecture  armor  blood  clothes  clutter
-; creationclub  critters  dlc01  dlc02  dungeons  effects
-; furniture  impactdecals  interface  landscape  lod  plants  puddle
-; shadertests  sky  terrain  test  trap  water  weapons
 )INI";
 
     // Only writes when the file is absent, so edited settings survive an
@@ -116,8 +124,7 @@ Normal:\clothes\=1024
         SKSE::log::info("Created {}", path.string());
     }
 
-    // Zero disables downscaling for that entry, anything else is raised to the
-    // floor.
+    // Zero leaves that entry at full size, anything else is raised to the floor.
     std::uint32_t ClampSize(long value, std::string_view setting) {
         if (value <= 0) return 0;
         if (value < static_cast<long>(kMinDimension)) {
@@ -236,7 +243,7 @@ void LoadConfig() {
     g_saved = config;
 
     if (config.enabled && config.smallestLimit == 0)
-        SKSE::log::warn("Nothing can be downscaled with these settings");
+        SKSE::log::warn("Nothing can be reduced with these settings");
 }
 
 void SaveConfig() {
