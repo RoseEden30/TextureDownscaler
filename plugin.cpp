@@ -12,72 +12,13 @@
 // outside that path, by another plugin, stay unidentified and get the Diffuse
 // limit. The log says how many.
 
+#include "Config.h"
+#include "Hooks.h"
+#include "Logging.h"
+#include "TextureFolders.h"
+#include "UI.h"
+
 namespace {
-    // D3D11 wants the top mip of a block-compressed texture to be a multiple of
-    // 4, so nothing can go below that.
-    constexpr std::uint32_t kMinDimension = 4;
-
-    enum class Category : std::size_t {
-        Diffuse,
-        Normal,
-        Parallax,
-        Material,
-        Glow,
-        Mask,
-        Count
-    };
-
-    constexpr std::size_t kCategoryCount = static_cast<std::size_t>(Category::Count);
-
-    // INI key per category, in enum order.
-    constexpr std::array<std::string_view, kCategoryCount> kCategoryNames{
-        "Diffuse", "Normal", "Parallax", "Material", "Glow", "Mask"
-    };
-
-    // Suffix to category, following the BSShaderTextureSet slots. No two
-    // entries can match the same name: a suffix only counts when the underscore
-    // lines up, so "_msn" is never read as "_n".
-    struct SuffixEntry {
-        std::string_view suffix;
-        Category         category;
-    };
-
-    constexpr std::array kSuffixes{
-        SuffixEntry{"_rmaos", Category::Material},
-        SuffixEntry{"_msn", Category::Normal},
-        SuffixEntry{"_em", Category::Mask},
-        SuffixEntry{"_sk", Category::Mask},
-        SuffixEntry{"_n", Category::Normal},
-        SuffixEntry{"_p", Category::Parallax},
-        SuffixEntry{"_g", Category::Glow},
-        SuffixEntry{"_m", Category::Mask},
-        SuffixEntry{"_s", Category::Mask},
-        SuffixEntry{"_b", Category::Mask},
-    };
-
-    struct FolderRule {
-        std::string             folder;   // lower case, backslashes
-        std::uint32_t           maxSize;
-        std::optional<Category> category; // unset applies to every type
-    };
-
-    struct Config {
-        bool          enabled  = true;
-        std::uint32_t logLevel = 2;
-
-        // Zero means that type is left at full size.
-        std::array<std::uint32_t, kCategoryCount> maxSize{};
-
-        // Kept in INI order so the first match wins.
-        std::vector<FolderRule> folders;
-
-        // The lowest limit any rule could act on. A texture at or below it is
-        // out of reach of all of them, so its name never has to be resolved.
-        std::uint32_t smallestLimit = 0;
-    };
-
-    Config g_config;
-
     // Touched from the render thread, read when a save is loaded.
     std::atomic<std::uint64_t> g_downscaledCount{0};
     std::atomic<std::uint64_t> g_savedBytes{0};
@@ -92,309 +33,6 @@ namespace {
     };
 
     NameStats g_names;
-
-    // Lower case, and both path separators fold together.
-    constexpr char Fold(char character) {
-        if (character >= 'A' && character <= 'Z') return static_cast<char>(character + ('a' - 'A'));
-        return character == '/' ? '\\' : character;
-    }
-
-    constexpr bool EqualsFolded(std::string_view left, std::string_view right) {
-        if (left.size() != right.size()) return false;
-        for (std::size_t i = 0; i < left.size(); ++i)
-            if (Fold(left[i]) != Fold(right[i])) return false;
-        return true;
-    }
-
-    bool ContainsFolded(std::string_view haystack, std::string_view needle) {
-        if (needle.empty() || needle.size() > haystack.size()) return false;
-
-        const auto last = haystack.size() - needle.size();
-        for (std::size_t start = 0; start <= last; ++start)
-            if (EqualsFolded(haystack.substr(start, needle.size()), needle)) return true;
-        return false;
-    }
-
-    void InitLogger() {
-        auto dir = SKSE::log::log_directory();
-        if (!dir) return;
-
-        const auto* plugin = SKSE::PluginDeclaration::GetSingleton();
-        *dir /= std::format("{}.log", plugin->GetName());
-
-        auto sink   = std::make_shared<spdlog::sinks::basic_file_sink_mt>(dir->string(), true);
-        auto logger = std::make_shared<spdlog::logger>("global", std::move(sink));
-
-        // Flushing every line would make the debug level unusable: the hook
-        // traces from the render thread, one line per texture.
-        logger->flush_on(spdlog::level::info);
-
-        spdlog::set_default_logger(std::move(logger));
-        spdlog::set_pattern("[%H:%M:%S.%e] [%l] %v");
-    }
-
-    void SetLogLevel(std::uint32_t level) {
-        switch (level) {
-            case 0:  spdlog::set_level(spdlog::level::trace);    break;
-            case 1:  spdlog::set_level(spdlog::level::debug);    break;
-            case 2:  spdlog::set_level(spdlog::level::info);     break;
-            case 3:  spdlog::set_level(spdlog::level::warn);     break;
-            case 4:  spdlog::set_level(spdlog::level::err);      break;
-            case 5:  spdlog::set_level(spdlog::level::critical); break;
-            default: spdlog::set_level(spdlog::level::info);     break;
-        }
-
-        // Debug writes a line per texture, so flushing every one costs. It's
-        // the only way the file survives the game going down mid-line.
-        spdlog::default_logger()->flush_on(level <= 1 ? spdlog::level::debug
-                                                      : spdlog::level::info);
-    }
-
-    std::filesystem::path GetIniPath() {
-        const auto* plugin = SKSE::PluginDeclaration::GetSingleton();
-        return std::filesystem::path(std::format("Data/SKSE/Plugins/{}.ini", plugin->GetName()));
-    }
-
-    // Kept in sync by hand with the .ini shipped alongside the plugin. This
-    // copy is what gets written back when a user deletes theirs.
-    constexpr std::string_view kDefaultIni = R"INI([General]
-; 0 turns the plugin off.
-Enabled=1
-; 0=Trace 1=Debug 2=Info 3=Warn 4=Error 5=Fatal
-; 1 logs every texture with its file name and category.
-LogLevel=2
-
-[Textures]
-; Maximum size per texture type. 0 leaves that type at full size.
-; The type is read from the end of the file name:
-;   Normal    _n _msn
-;   Parallax  _p
-;   Material  _rmaos          (PBR / complex material)
-;   Glow      _g
-;   Mask      _m _em _s _sk _b
-;   Diffuse   everything else
-Diffuse=1024
-Normal=1024
-Parallax=1024
-Material=1024
-Glow=1024
-Mask=1024
-
-[Folders]
-; Maximum size for a folder, matched anywhere in the path. Wins over
-; [Textures]. 0 leaves the folder at full size. Close a rule on both sides:
-; \lod matches \clutter\lodestone.dds as well, \lod\ does not.
-;
-; A rule can start with a texture type, and then it only applies to that
-; type. Rules are read from top to bottom and the first one that matches
-; wins, so these two keep doors at full size except for their normal maps:
-;   Normal:door=1024
-;   door=0
-
-\interface\=0
-\sky\=0
-\terrain\=0
-\lod\=0
-\dyndolod\=0
-\lodgen\=0
-Normal:\landscape\mountains\=2048
-\landscape\mountains\=0
-Normal:grass=2048
-grass=0
-Normal:rocks=2048
-rocks=0
-Normal:\alduin\=2048
-\alduin\=0
-Normal:\dragon\=2048
-\dragon\=0
-Normal:\parthurnax\=2048
-\parthurnax\=0
-Normal:\undeaddragon\=2048
-\undeaddragon\=0
-\tintmasks\=0
-\facegendata\=0
-\effects\gradients\=0
-Normal:\pbr\=1024
-\pbr\=2048
-\actors\character\=2048
-Normal:\armor\=1024
-\armor\=2048
-Normal:\clothes\=1024
-\clothes\=2048
-
-; Your own rules go here.
-
-; Vanilla folders, for reference. Deeper paths work too, for example
-; \architecture\whiterun\ or \actors\character\male\.
-;
-; _byoh  actors  architecture  armor  blood  clothes  clutter
-; creationclub  critters  dlc01  dlc02  dungeons  effects
-; furniture  impactdecals  interface  landscape  lod  plants  puddle
-; shadertests  sky  terrain  test  trap  water  weapons
-)INI";
-
-    // Only ever writes when there's nothing there, so a user's edited settings
-    // survive a plugin update.
-    void WriteDefaultIni(const std::filesystem::path& path) {
-        std::error_code ec;
-        if (std::filesystem::exists(path, ec) || ec) return;
-
-        // Binary, so the line endings in the literal above don't get
-        // translated a second time.
-        std::ofstream file(path, std::ios::binary);
-        if (!file) {
-            SKSE::log::warn("Can't write {}", path.string());
-            return;
-        }
-
-        file << kDefaultIni;
-        SKSE::log::info("Created {}", path.string());
-    }
-
-    // Zero switches downscaling off for that entry, anything else is pulled up
-    // to the 4 pixel floor.
-    std::uint32_t ClampSize(long value, std::string_view setting) {
-        if (value <= 0) return 0;
-        if (value < static_cast<long>(kMinDimension)) {
-            SKSE::log::warn("{}={} is too small, using {}", setting, value, kMinDimension);
-            return kMinDimension;
-        }
-        return static_cast<std::uint32_t>(value);
-    }
-
-    std::optional<Category> CategoryFromName(std::string_view name) {
-        for (std::size_t i = 0; i < kCategoryCount; ++i)
-            if (EqualsFolded(name, kCategoryNames[i])) return static_cast<Category>(i);
-
-        return std::nullopt;
-    }
-
-    // How a rule reads back in the log, prefix included.
-    std::string RuleName(const FolderRule& rule) {
-        if (!rule.category) return rule.folder;
-
-        return std::format("{}:{}",
-                           kCategoryNames[static_cast<std::size_t>(*rule.category)], rule.folder);
-    }
-
-    // A rule can be narrowed to one texture type, written Normal:folder. Takes
-    // the prefix off and returns false if it doesn't name a type.
-    bool SplitCategory(std::string_view& folder, std::optional<Category>& category) {
-        const auto colon = folder.find(':');
-        if (colon == std::string_view::npos) return true;
-
-        category = CategoryFromName(folder.substr(0, colon));
-        if (!category) return false;
-
-        folder.remove_prefix(colon + 1);
-        return true;
-    }
-
-    void ReadFolders(const CSimpleIniA& ini, Config& config) {
-        CSimpleIniA::TNamesDepend keys;
-        if (!ini.GetAllKeys("Folders", keys)) return;
-
-        keys.sort(CSimpleIniA::Entry::LoadOrder());
-
-        for (const auto& key : keys) {
-            std::string entry;
-            for (const char* c = key.pItem; *c; ++c) entry.push_back(Fold(*c));
-
-            std::optional<Category> category;
-            std::string_view        folder{entry};
-
-            if (!SplitCategory(folder, category)) {
-                SKSE::log::warn("{} isn't a texture type, rule ignored", key.pItem);
-                continue;
-            }
-
-            if (folder.empty()) continue;
-
-            const auto size = ClampSize(ini.GetLongValue("Folders", key.pItem, 0), key.pItem);
-            config.folders.emplace_back(std::string(folder), size, category);
-        }
-    }
-
-    // A rule an earlier one already covers can never fire.
-    void WarnShadowedFolders(const Config& config) {
-        for (std::size_t i = 0; i < config.folders.size(); ++i) {
-            const auto& rule = config.folders[i];
-
-            for (std::size_t j = 0; j < i; ++j) {
-                const auto& earlier = config.folders[j];
-
-                if (earlier.category && earlier.category != rule.category) continue;
-                if (!ContainsFolded(rule.folder, earlier.folder)) continue;
-
-                SKSE::log::warn("{} never applies, {} above it matches first",
-                                RuleName(rule), RuleName(earlier));
-                break;
-            }
-        }
-    }
-
-    void LoadConfig() {
-        const auto path = GetIniPath();
-        WriteDefaultIni(path);
-
-        CSimpleIniA ini;
-        ini.SetUnicode();
-
-        const bool loaded = ini.LoadFile(path.string().c_str()) >= 0;
-
-        if (loaded) {
-            g_config.enabled = ini.GetBoolValue("General", "Enabled", true);
-            g_config.logLevel =
-                static_cast<std::uint32_t>(ini.GetLongValue("General", "LogLevel", 2));
-        }
-
-        SetLogLevel(g_config.logLevel);
-
-        const auto* plugin = SKSE::PluginDeclaration::GetSingleton();
-        SKSE::log::info("{} v{}", plugin->GetName(), plugin->GetVersion().string("."sv));
-
-        if (!loaded) SKSE::log::warn("No {}, using defaults", path.string());
-
-        for (std::size_t i = 0; i < kCategoryCount; ++i) {
-            const std::string key(kCategoryNames[i]);
-            g_config.maxSize[i] =
-                loaded ? ClampSize(ini.GetLongValue("Textures", key.c_str(), 1024), key) : 1024;
-        }
-
-        if (loaded) ReadFolders(ini, g_config);
-
-        // The 1.x settings would be read as "everything at default", which is
-        // not what the file says. Worth a word rather than a silent surprise.
-        if (loaded && (ini.GetSectionSize("Suffix") >= 0 || ini.GetSectionSize("Path") >= 0))
-            SKSE::log::warn("[Suffix] and [Path] are gone, see [Textures] and [Folders]");
-
-        std::string summary;
-        for (std::size_t i = 0; i < kCategoryCount; ++i) {
-            if (i > 0) summary += ' ';
-            summary += std::format("{}={}", kCategoryNames[i], g_config.maxSize[i]);
-        }
-
-        SKSE::log::info("Enabled={} {}", g_config.enabled, summary);
-
-        for (const auto& folder : g_config.folders)
-            SKSE::log::info("Folder {}={}", RuleName(folder), folder.maxSize);
-
-        WarnShadowedFolders(g_config);
-
-        // A zero can't start a downscale, so it can't lower the bar for
-        // resolving names either.
-        for (const auto size : g_config.maxSize)
-            if (size != 0 && (g_config.smallestLimit == 0 || size < g_config.smallestLimit))
-                g_config.smallestLimit = size;
-
-        for (const auto& folder : g_config.folders)
-            if (folder.maxSize != 0 &&
-                (g_config.smallestLimit == 0 || folder.maxSize < g_config.smallestLimit))
-                g_config.smallestLimit = folder.maxSize;
-
-        if (g_config.enabled && g_config.smallestLimit == 0)
-            SKSE::log::warn("Nothing can be downscaled with these settings");
-    }
 
     bool IsBlockCompressed(DXGI_FORMAT format) {
         switch (format) {
@@ -619,6 +257,27 @@ Normal:\clothes\=1024
         return result;
     }
 
+    // Suffix to category, following the BSShaderTextureSet slots. No two
+    // entries can match the same name: a suffix only counts when the underscore
+    // lines up, so "_msn" is never read as "_n".
+    struct SuffixEntry {
+        std::string_view suffix;
+        Category         category;
+    };
+
+    constexpr std::array kSuffixes{
+        SuffixEntry{"_rmaos", Category::Material},
+        SuffixEntry{"_msn", Category::Normal},
+        SuffixEntry{"_em", Category::Mask},
+        SuffixEntry{"_sk", Category::Mask},
+        SuffixEntry{"_n", Category::Normal},
+        SuffixEntry{"_p", Category::Parallax},
+        SuffixEntry{"_g", Category::Glow},
+        SuffixEntry{"_m", Category::Mask},
+        SuffixEntry{"_s", Category::Mask},
+        SuffixEntry{"_b", Category::Mask},
+    };
+
     Category CategoryOf(std::string_view name) {
         auto stem = name;
 
@@ -638,21 +297,22 @@ Normal:\clothes\=1024
 
     // A folder rule wins over the type: it's the more specific of the two. The
     // type check comes first, it's cheaper than the substring search.
-    std::uint32_t LimitFor(std::string_view name, Category category) {
-        for (const auto& folder : g_config.folders) {
+    std::uint32_t LimitFor(const Config& config, std::string_view name, Category category) {
+        for (const auto& folder : config.folders) {
             if (folder.category && *folder.category != category) continue;
             if (ContainsFolded(name, folder.folder)) return folder.maxSize;
         }
 
-        return g_config.maxSize[static_cast<std::size_t>(category)];
+        return config.maxSize[static_cast<std::size_t>(category)];
     }
 
     // How many mip levels to drop off the front of the chain. Zero means leave
     // the texture alone.
-    std::uint32_t ComputeSkip(const D3D11_TEXTURE2D_DESC& desc,
+    std::uint32_t ComputeSkip(const Config&               config,
+                              const D3D11_TEXTURE2D_DESC& desc,
                               std::string_view            name,
                               Category                    category) {
-        const auto limit = LimitFor(name, category);
+        const auto limit = LimitFor(config, name, category);
         if (limit == 0) return 0;
         if (desc.Width <= limit && desc.Height <= limit) return 0;
 
@@ -682,10 +342,12 @@ Normal:\clothes\=1024
 
     // Everything that can be decided from the description alone, before paying
     // for a name.
-    bool IsCandidate(const D3D11_TEXTURE2D_DESC& desc, const D3D11_SUBRESOURCE_DATA* data) {
+    // Whether the texture came out of a file, as opposed to being a surface the
+    // engine draws into. Only these carry a name worth resolving.
+    bool IsFromFile(const D3D11_TEXTURE2D_DESC& desc, const D3D11_SUBRESOURCE_DATA* data) {
         // No initial data means there's no pyramid to pick from: the game fills
         // the texture later and expects the size it asked for.
-        if (!g_config.enabled || !data) return false;
+        if (!g_enabled.load(std::memory_order_relaxed) || !data) return false;
 
         // Arrays and cubemaps would need every slice remapped, and a single mip
         // leaves nothing to drop.
@@ -709,11 +371,14 @@ Normal:\clothes\=1024
 
         // Dynamic and staging textures get rewritten at runtime by code that
         // works out offsets from the original size.
-        if (desc.Usage != D3D11_USAGE_DEFAULT && desc.Usage != D3D11_USAGE_IMMUTABLE) return false;
+        return desc.Usage == D3D11_USAGE_DEFAULT || desc.Usage == D3D11_USAGE_IMMUTABLE;
+    }
 
-        // Under the smallest limit in the file, no rule can have a say.
-        if (g_config.smallestLimit == 0) return false;
-        return desc.Width > g_config.smallestLimit || desc.Height > g_config.smallestLimit;
+    // Under the smallest limit in the settings, no rule can have a say.
+    bool WorthDownscaling(const D3D11_TEXTURE2D_DESC& desc) {
+        const auto smallest = g_smallestLimit.load(std::memory_order_relaxed);
+        if (smallest == 0) return false;
+        return desc.Width > smallest || desc.Height > smallest;
     }
 
     // ID3D11Device vtable slots.
@@ -736,14 +401,32 @@ Normal:\clothes\=1024
                                                    const D3D11_TEXTURE2D_DESC*   desc,
                                                    const D3D11_SUBRESOURCE_DATA* data,
                                                    ID3D11Texture2D**             out) {
-        if (!desc || !IsCandidate(*desc, data))
+        if (!desc || !IsFromFile(*desc, data))
             return g_originalCreateTexture2D(self, desc, data, out);
+
+        const bool downscale = WorthDownscaling(*desc);
+        const bool track     = g_trackUsedFolders.load(std::memory_order_relaxed);
+
+        // Nothing to decide and nobody to tell, so the name is never looked up.
+        // This is the path every texture takes when the menu isn't installed.
+        if (!downscale && !track) return g_originalCreateTexture2D(self, desc, data, out);
 
         const auto resolved = ResolveTextureName();
         const auto name     = resolved.view();
+
+        // Counted whatever the size, so the menu shows what this load order
+        // uses rather than only what the current limits reach.
+        if (track) RecordUsedFolder(name);
+
+        if (!downscale) return g_originalCreateTexture2D(self, desc, data, out);
+
         const auto category = CategoryOf(name);
 
-        const auto skip = ComputeSkip(*desc, name, category);
+        // One snapshot for the whole decision, so the rules can't change
+        // underneath it.
+        const auto config = ActiveConfig();
+
+        const auto skip = ComputeSkip(*config, *desc, name, category);
         if (skip == 0) return g_originalCreateTexture2D(self, desc, data, out);
 
         D3D11_TEXTURE2D_DESC reduced = *desc;
@@ -857,59 +540,66 @@ Normal:\clothes\=1024
         SKSE::log::debug("Texture loader hooked");
     }
 
-    void InstallHooks() {
-        if (!g_config.enabled) {
-            SKSE::log::info("Disabled in the settings");
-            return;
-        }
+    std::atomic<bool> g_hooksInstalled{false};
+}
 
-        // Nothing here is specific to a runtime, but no VR install has been tested.
-        if (REL::Module::IsVR()) {
-            SKSE::log::warn("Skyrim VR is untested");
-        }
-
-        // Live before the first texture reaches the D3D hook, otherwise the
-        // early ones have no name to go on.
-        InstallTextureLoadHook();
-
-        auto* manager = RE::BSRenderManager::GetSingleton();
-        if (!manager) {
-            SKSE::log::error("No BSRenderManager");
-            return;
-        }
-
-        auto* device = manager->GetRuntimeData().forwarder;
-        if (!device) {
-            SKSE::log::error("No D3D11 device");
-            return;
-        }
-
-        // The view hook has to be live before the first reduced texture exists,
-        // otherwise a view could be built against a chain that no longer matches
-        // its description.
-        if (!PatchSlot(device, kSlot_CreateShaderResourceView,
-                       reinterpret_cast<void*>(&Hook_CreateSRV),
-                       reinterpret_cast<void**>(&g_originalCreateSRV))) {
-            SKSE::log::error("Couldn't hook CreateShaderResourceView");
-            return;
-        }
-
-        if (!PatchSlot(device, kSlot_CreateTexture2D,
-                       reinterpret_cast<void*>(&Hook_CreateTexture2D),
-                       reinterpret_cast<void**>(&g_originalCreateTexture2D))) {
-            SKSE::log::error("Couldn't hook CreateTexture2D");
-
-            // Leaving the view hook in place would clamp views for no reason.
-            void* discarded = nullptr;
-            PatchSlot(device, kSlot_CreateShaderResourceView,
-                      reinterpret_cast<void*>(g_originalCreateSRV), &discarded);
-            g_originalCreateSRV = nullptr;
-            return;
-        }
-
-        SKSE::log::info("Hooks installed");
+void InstallHooks() {
+    if (!g_enabled.load(std::memory_order_relaxed)) {
+        SKSE::log::info("Disabled in the settings");
+        return;
     }
 
+    // Nothing here is specific to a runtime, but no VR install has been tested.
+    if (REL::Module::IsVR()) {
+        SKSE::log::warn("Skyrim VR is untested");
+    }
+
+    // Live before the first texture reaches the D3D hook, otherwise the
+    // early ones have no name to go on.
+    InstallTextureLoadHook();
+
+    auto* manager = RE::BSRenderManager::GetSingleton();
+    if (!manager) {
+        SKSE::log::error("No BSRenderManager");
+        return;
+    }
+
+    auto* device = manager->GetRuntimeData().forwarder;
+    if (!device) {
+        SKSE::log::error("No D3D11 device");
+        return;
+    }
+
+    // The view hook has to be live before the first reduced texture exists,
+    // otherwise a view could be built against a chain that no longer matches
+    // its description.
+    if (!PatchSlot(device, kSlot_CreateShaderResourceView,
+                   reinterpret_cast<void*>(&Hook_CreateSRV),
+                   reinterpret_cast<void**>(&g_originalCreateSRV))) {
+        SKSE::log::error("Couldn't hook CreateShaderResourceView");
+        return;
+    }
+
+    if (!PatchSlot(device, kSlot_CreateTexture2D,
+                   reinterpret_cast<void*>(&Hook_CreateTexture2D),
+                   reinterpret_cast<void**>(&g_originalCreateTexture2D))) {
+        SKSE::log::error("Couldn't hook CreateTexture2D");
+
+        // Leaving the view hook in place would clamp views for no reason.
+        void* discarded = nullptr;
+        PatchSlot(device, kSlot_CreateShaderResourceView,
+                  reinterpret_cast<void*>(g_originalCreateSRV), &discarded);
+        g_originalCreateSRV = nullptr;
+        return;
+    }
+
+    g_hooksInstalled.store(true, std::memory_order_release);
+    SKSE::log::info("Hooks installed");
+}
+
+bool HooksInstalled() { return g_hooksInstalled.load(std::memory_order_acquire); }
+
+namespace {
     void LogNameStats() {
         const auto resolved  = g_names.resolved.load(std::memory_order_relaxed);
         const auto noTexture = g_names.noTexture.load(std::memory_order_relaxed);
@@ -956,6 +646,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
         switch (message->type) {
             case SKSE::MessagingInterface::kDataLoaded:
                 InstallHooks();
+                UI::Register();
                 break;
             case SKSE::MessagingInterface::kNewGame:
             case SKSE::MessagingInterface::kPostLoadGame:

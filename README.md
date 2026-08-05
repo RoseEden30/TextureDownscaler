@@ -19,6 +19,8 @@ The installer offers four starting points. Each one is just a settings file, so 
 
 All of them leave interface, LOD, sky, terrain, faces, dragons and landscape at full size. Custom does nothing at all until you set your own limits.
 
+Quality also leaves armour, clothing, PBR material maps and character textures untouched. Performance drops every type other than diffuse to 512 and caps character textures at 1024.
+
 ## Settings
 
 `Data/SKSE/Plugins/TextureDownscaler.ini`
@@ -70,7 +72,17 @@ door=0
 
 Those two keep doors at full size except for their normal maps. A rule that an earlier one already covers can never fire, and gets reported in the log when the settings are read.
 
-Set `LogLevel=1` to see how your load order is actually classified.
+`LogLevel=1` writes a line for each texture loaded at a reduced size, with its name and the type it was read as.
+
+## In-game menu
+
+If [SKSE Menu Framework](https://www.nexusmods.com/skyrimspecialedition/mods/120352) is installed, the settings are also editable in game, under TextureDownscaler. Changes take effect on the next texture load and can be written back to the ini from any page.
+
+The menu is entirely optional. Without it the plugin behaves exactly as it did before, and none of its code runs.
+
+`TrackUsedFolders=1` counts the textures your game loads, per folder, and fills the `Used` column. It is off by default because it costs a little on every texture load, and it can be switched on and off from the page itself.
+
+`Browse folders` lists every folder under `Data\textures`, along with the ones the base game keeps in its archives, and shows how many textures your game has actually loaded from each. It is the quickest way to find out where a rule is worth adding for your own load order.
 
 ## Notes
 
@@ -89,4 +101,6 @@ cmake --build build/release
 
 Set `SKYRIM_MODS_FOLDER` or `SKYRIM_FOLDER` and the build deploys the plugin for you.
 
-Built on [CommonLibSSE NG](https://github.com/CharmedBaryon/CommonLibSSE-NG). MIT licensed.
+Built on [CommonLibSSE NG](https://github.com/CharmedBaryon/CommonLibSSE-NG).
+
+MIT licensed, except `include/SKSEMenuFramework.h`, redistributed unmodified from [SKSE Menu Framework](https://github.com/QTR-Modding/SKSE-Menu-Framework-3) under LGPL-2.1. See NOTICE.

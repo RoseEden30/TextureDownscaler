@@ -3,7 +3,7 @@
 
 cmake_minimum_required(VERSION 3.21)
 
-project(TextureDownscaler VERSION 2.2.0 LANGUAGES CXX)
+project(TextureDownscaler VERSION 2.3.0 LANGUAGES CXX)
 
 # Name of the folder created under the mods folder. Separate from the project
 # name so it can carry a space without renaming the files.
@@ -22,7 +22,12 @@ endif()
 
 find_package(CommonLibSSE CONFIG REQUIRED)
 
-add_commonlibsse_plugin(${PROJECT_NAME} AUTHOR RoseEden SOURCES plugin.cpp)
+add_commonlibsse_plugin(${PROJECT_NAME} AUTHOR RoseEden
+    SOURCES plugin.cpp Config.cpp Logging.cpp TextureFolders.cpp UI.cpp)
+
+# Also holds SKSEMenuFramework.h, which is header only and resolved through
+# GetProcAddress, so there is no library to link and no vcpkg dependency.
+target_include_directories(${PROJECT_NAME} PRIVATE include)
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
 target_precompile_headers(${PROJECT_NAME} PRIVATE PCH.h)
 
