@@ -23,13 +23,18 @@ endif()
 find_package(CommonLibSSE CONFIG REQUIRED)
 
 add_commonlibsse_plugin(${PROJECT_NAME} AUTHOR RoseEden
-    SOURCES plugin.cpp Config.cpp Logging.cpp TextureFolders.cpp UI.cpp)
+    SOURCES
+        src/plugin.cpp
+        src/Config.cpp
+        src/Logging.cpp
+        src/TextureFolders.cpp
+        src/UI.cpp)
 
 # Also holds SKSEMenuFramework.h, which is header only and resolved through
 # GetProcAddress, so there is no library to link and no vcpkg dependency.
 target_include_directories(${PROJECT_NAME} PRIVATE include)
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
-target_precompile_headers(${PROJECT_NAME} PRIVATE PCH.h)
+target_precompile_headers(${PROJECT_NAME} PRIVATE src/PCH.h)
 
 # Symbols in every configuration, so a crash log names a function instead of an
 # offset. /Z7 keeps the debug info in the object files; /DEBUG writes the .pdb

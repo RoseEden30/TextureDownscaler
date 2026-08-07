@@ -234,11 +234,8 @@ namespace {
             return result;
         }
 
-        // The stream the texture reads from knows the file; it sits at 0x40,
-        // right after NiTexture.
-        constexpr std::size_t kStreamSlot = 0x40 / sizeof(void*);
-
-        result.owned = GetStreamName(reinterpret_cast<void* const*>(texture)[kStreamSlot]);
+        // The stream the texture reads from knows the file it came from.
+        result.owned = GetStreamName(texture->unk40);
 
         if (!result.view().empty()) {
             g_names.resolved.fetch_add(1, std::memory_order_relaxed);
@@ -638,6 +635,12 @@ namespace {
         // The rest fall back to Diffuse, so this is how much of the settings
         // file had a say.
         SKSE::log::info("File name found for {} of {} textures", resolved, total);
+
+        // Nothing named at all means the loader hook never ran: something else
+        // took the slot without chaining, and only [Textures] Diffuse applies.
+        // Worth saying out loud, since the plugin otherwise looks like it works.
+        if (resolved == 0)
+            SKSE::log::warn("No file name could be read, every texture was treated as Diffuse");
 
         const auto fromTexture   = g_names.fromTexture.load(std::memory_order_relaxed);
         const auto skippedStream = g_names.skippedStream.load(std::memory_order_relaxed);
