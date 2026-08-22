@@ -1,6 +1,10 @@
 {
     "dependencies": [
-        "commonlibsse-ng",
-        "simpleini"
+        "simpleini",
+        "spdlog",
+        "fmt",
+        "rapidcsv",
+        "xbyak",
+        "directxtk"
     ]
 }

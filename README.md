@@ -92,7 +92,7 @@ File names come from the engine's texture loader, which is hooked so that the te
 
 ## Building
 
-Needs Visual Studio 2022 and [vcpkg](https://github.com/microsoft/vcpkg) with `VCPKG_ROOT` set. From an x64 Native Tools Command Prompt:
+Needs Visual Studio 2022, [vcpkg](https://github.com/microsoft/vcpkg) with `VCPKG_ROOT` set, and [CommonLibSSE-NG](https://github.com/alandtse/CommonLibSSE-NG/tree/ng) cloned next to this repo's folder (i.e. `../CommonLibSSE-NG`). From an x64 Native Tools Command Prompt:
 
 ```
 cmake --preset release
@@ -101,6 +101,6 @@ cmake --build build/release
 
 Set `SKYRIM_MODS_FOLDER` or `SKYRIM_FOLDER` and the build deploys the plugin for you.
 
-Built on [CommonLibSSE NG](https://github.com/CharmedBaryon/CommonLibSSE-NG).
+## License
 
-MIT licensed, except `include/SKSEMenuFramework.h`, redistributed unmodified from [SKSE Menu Framework](https://github.com/QTR-Modding/SKSE-Menu-Framework-3) under LGPL-2.1. See NOTICE.
+[GPL-3.0-or-later](LICENSE) WITH [Modding Exception AND GPL-3.0 Linking Exception (with Corresponding Source)](EXCEPTIONS.md).

@@ -235,7 +235,7 @@ namespace {
         }
 
         // The stream the texture reads from knows the file it came from.
-        result.owned = GetStreamName(texture->unk40);
+        result.owned = GetStreamName(texture->resourceStream);
 
         if (!result.view().empty()) {
             g_names.resolved.fetch_add(1, std::memory_order_relaxed);
@@ -383,31 +383,35 @@ namespace {
         return desc.Width > smallest || desc.Height > smallest;
     }
 
-    // ID3D11Device vtable slots.
+    // REX::W32::ID3D11Device vtable slots.
     constexpr std::size_t kSlot_CreateTexture2D          = 5;
     constexpr std::size_t kSlot_CreateShaderResourceView = 7;
 
-    using CreateTexture2D_t = HRESULT(STDMETHODCALLTYPE*)(ID3D11Device*,
-                                                          const D3D11_TEXTURE2D_DESC*,
-                                                          const D3D11_SUBRESOURCE_DATA*,
-                                                          ID3D11Texture2D**);
-    using CreateSRV_t = HRESULT(STDMETHODCALLTYPE*)(ID3D11Device*,
-                                                    ID3D11Resource*,
-                                                    const D3D11_SHADER_RESOURCE_VIEW_DESC*,
-                                                    ID3D11ShaderResourceView**);
+    using CreateTexture2D_t = HRESULT(STDMETHODCALLTYPE*)(
+        REX::W32::ID3D11Device*,
+        const D3D11_TEXTURE2D_DESC*,
+        const D3D11_SUBRESOURCE_DATA*,
+        ID3D11Texture2D**);
+
+    using CreateSRV_t = HRESULT(STDMETHODCALLTYPE*)(
+        REX::W32::ID3D11Device*,
+        ID3D11Resource*,
+        const D3D11_SHADER_RESOURCE_VIEW_DESC*,
+        ID3D11ShaderResourceView**);
 
     CreateTexture2D_t g_originalCreateTexture2D = nullptr;
     CreateSRV_t       g_originalCreateSRV       = nullptr;
 
-    HRESULT STDMETHODCALLTYPE Hook_CreateTexture2D(ID3D11Device*                 self,
-                                                   const D3D11_TEXTURE2D_DESC*   desc,
-                                                   const D3D11_SUBRESOURCE_DATA* data,
-                                                   ID3D11Texture2D**             out) {
+    HRESULT STDMETHODCALLTYPE Hook_CreateTexture2D(
+        REX::W32::ID3D11Device* self,
+        const D3D11_TEXTURE2D_DESC* desc,
+        const D3D11_SUBRESOURCE_DATA* data,
+        ID3D11Texture2D** out) {
         if (!desc || !IsFromFile(*desc, data))
             return g_originalCreateTexture2D(self, desc, data, out);
 
         const bool reduce = WorthReducing(*desc);
-        const bool track     = g_trackUsedFolders.load(std::memory_order_relaxed);
+        const bool track = g_trackUsedFolders.load(std::memory_order_relaxed);
 
         // Nothing to decide and nobody to tell, so the name is never looked up.
         // This is the path every texture takes when the menu isn't installed.
@@ -418,7 +422,7 @@ namespace {
         // Folded once here. Everything downstream compares against rules that
         // are already folded, so nothing has to fold again per comparison.
         thread_local std::string buffer;
-        const auto               name = FoldInto(resolved.view(), buffer);
+        const auto name = FoldInto(resolved.view(), buffer);
 
         // Counted whatever the size, so the menu shows what this load order
         // uses rather than only what the current limits reach.
@@ -467,10 +471,11 @@ namespace {
         return hr;
     }
 
-    HRESULT STDMETHODCALLTYPE Hook_CreateSRV(ID3D11Device*                          self,
-                                             ID3D11Resource*                        resource,
-                                             const D3D11_SHADER_RESOURCE_VIEW_DESC* desc,
-                                             ID3D11ShaderResourceView**             out) {
+    HRESULT STDMETHODCALLTYPE Hook_CreateSRV(
+        REX::W32::ID3D11Device* self,
+        ID3D11Resource* resource,
+        const D3D11_SHADER_RESOURCE_VIEW_DESC* desc,
+        ID3D11ShaderResourceView** out) {
         if (!resource || !desc || desc->ViewDimension != D3D11_SRV_DIMENSION_TEXTURE2D)
             return g_originalCreateSRV(self, resource, desc, out);
 
@@ -489,7 +494,7 @@ namespace {
         // Trimming the count is the normal case for a reduced texture. A first
         // level past the end is not, and worth a word.
         D3D11_SHADER_RESOURCE_VIEW_DESC clamped = *desc;
-        bool                            changed = false;
+        bool changed = false;
 
         if (clamped.Texture2D.MostDetailedMip >= textureDesc.MipLevels) {
             SKSE::log::debug("View asked for mip {} of a {} level {}x{} texture",
@@ -497,13 +502,13 @@ namespace {
                              textureDesc.Width, textureDesc.Height);
 
             clamped.Texture2D.MostDetailedMip = textureDesc.MipLevels - 1;
-            changed                           = true;
+            changed = true;
         }
 
         if (clamped.Texture2D.MipLevels != static_cast<UINT>(-1) &&
             clamped.Texture2D.MostDetailedMip + clamped.Texture2D.MipLevels > textureDesc.MipLevels) {
             clamped.Texture2D.MipLevels = textureDesc.MipLevels - clamped.Texture2D.MostDetailedMip;
-            changed                     = true;
+            changed = true;
         }
 
         if (!changed) return g_originalCreateSRV(self, resource, desc, out);
@@ -518,9 +523,9 @@ namespace {
         return hr;
     }
 
-    bool PatchSlot(ID3D11Device* device, std::size_t slot, void* hook, void** original) {
+    bool PatchSlot(REX::W32::ID3D11Device* device, std::size_t slot, void* hook, void** original) {
         auto** vtable = *reinterpret_cast<void***>(device);
-        void** entry  = &vtable[slot];
+        void** entry = &vtable[slot];
 
         DWORD previousProtection = 0;
         if (!VirtualProtect(entry, sizeof(void*), PAGE_READWRITE, &previousProtection)) return false;
@@ -529,7 +534,7 @@ namespace {
         // is already creating textures, so what the hook chains into has to be
         // readable first.
         void* previous = *entry;
-        *original      = previous;
+        *original = previous;
 
         void* swapped = InterlockedExchangePointer(static_cast<void* volatile*>(entry), hook);
 
@@ -582,13 +587,13 @@ void InstallHooks() {
     // early ones have no name to go on.
     InstallTextureLoadHook();
 
-    auto* manager = RE::BSRenderManager::GetSingleton();
-    if (!manager) {
-        SKSE::log::error("No BSRenderManager");
+    auto* renderer = RE::BSGraphics::Renderer::GetSingleton();
+    if (!renderer) {
+        SKSE::log::error("No BSGraphics::Renderer");
         return;
     }
 
-    auto* device = manager->GetRuntimeData().forwarder;
+    auto* device = renderer->GetDevice();
     if (!device) {
         SKSE::log::error("No D3D11 device");
         return;
@@ -626,10 +631,10 @@ bool HooksInstalled() { return g_hooksInstalled.load(std::memory_order_acquire);
 
 namespace {
     void LogNameStats() {
-        const auto resolved  = g_names.resolved.load(std::memory_order_relaxed);
+        const auto resolved = g_names.resolved.load(std::memory_order_relaxed);
         const auto noTexture = g_names.noTexture.load(std::memory_order_relaxed);
-        const auto unnamed   = g_names.unnamed.load(std::memory_order_relaxed);
-        const auto total     = resolved + noTexture + unnamed;
+        const auto unnamed = g_names.unnamed.load(std::memory_order_relaxed);
+        const auto total = resolved + noTexture + unnamed;
         if (total == 0) return;
 
         // The rest fall back to Diffuse, so this is how much of the settings
@@ -642,7 +647,7 @@ namespace {
         if (resolved == 0)
             SKSE::log::warn("No file name could be read, every texture was treated as Diffuse");
 
-        const auto fromTexture   = g_names.fromTexture.load(std::memory_order_relaxed);
+        const auto fromTexture = g_names.fromTexture.load(std::memory_order_relaxed);
         const auto skippedStream = g_names.skippedStream.load(std::memory_order_relaxed);
 
         SKSE::log::debug("Lookup: {} named by the texture rather than its stream, {} created "
