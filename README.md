@@ -92,7 +92,9 @@ File names come from the engine's texture loader, which is hooked so that the te
 
 ## Building
 
-Needs Visual Studio 2022, [vcpkg](https://github.com/microsoft/vcpkg) with `VCPKG_ROOT` set, and [CommonLibSSE-NG](https://github.com/alandtse/CommonLibSSE-NG/tree/ng) cloned next to this repo's folder (i.e. `../CommonLibSSE-NG`). From an x64 Native Tools Command Prompt:
+Needs Visual Studio 2022 and [vcpkg](https://github.com/microsoft/vcpkg) with `VCPKG_ROOT` set. CommonLibSSE-NG is a git submodule under `extern/`; clone with `--recursive`, or run `git submodule update --init` after a plain clone.
+
+From an x64 Native Tools Command Prompt:
 
 ```
 cmake --preset release

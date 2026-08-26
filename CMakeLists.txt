@@ -25,11 +25,10 @@ endif()
 # Disable unit tests (not needed for a plugin)
 set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
 
-# CommonLibSSE-NG is shared by multiple plugin projects and kept outside the
-# project directory so the same checkout can be reused by each project.
+# CommonLibSSE-NG is a git submodule pinned under extern/.
 set(
     COMMONLIBSSE_DIR
-    "${CMAKE_CURRENT_SOURCE_DIR}/../CommonLibSSE-NG"
+    "${CMAKE_CURRENT_SOURCE_DIR}/extern/CommonLibSSE-NG"
     CACHE PATH
     "Path to CommonLibSSE-NG"
 )
