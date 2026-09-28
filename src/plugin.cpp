@@ -672,7 +672,7 @@ namespace {
 
 SKSEPluginLoad(const SKSE::LoadInterface* skse) {
     InitLogger();
-    SKSE::Init(skse);
+    SKSE::Init(skse, { .log = false });
 
     // Read the settings here so the requested log level covers everything that
     // follows, hook installation included.
