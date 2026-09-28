@@ -254,27 +254,6 @@ namespace {
         return result;
     }
 
-    // Suffix to category, following the BSShaderTextureSet slots. No two
-    // entries can match the same name: a suffix only counts when the underscore
-    // lines up, so "_msn" is never read as "_n".
-    struct SuffixEntry {
-        std::string_view suffix;
-        Category         category;
-    };
-
-    constexpr std::array kSuffixes{
-        SuffixEntry{"_rmaos", Category::Material},
-        SuffixEntry{"_msn", Category::Normal},
-        SuffixEntry{"_em", Category::Mask},
-        SuffixEntry{"_sk", Category::Mask},
-        SuffixEntry{"_n", Category::Normal},
-        SuffixEntry{"_p", Category::Parallax},
-        SuffixEntry{"_g", Category::Glow},
-        SuffixEntry{"_m", Category::Mask},
-        SuffixEntry{"_s", Category::Mask},
-        SuffixEntry{"_b", Category::Mask},
-    };
-
     // Takes the name already folded, so the suffix and rule comparisons below
     // are plain byte matches.
     Category CategoryOf(std::string_view name) {
@@ -564,11 +543,12 @@ namespace {
         SKSE::log::debug("Texture loader hooked");
     }
 
-    std::atomic<bool> g_hooksInstalled{false};
+    std::atomic<HookStatus> g_hookStatus{HookStatus::NotInstalled};
 }
 
 void InstallHooks() {
     if (!g_enabled.load(std::memory_order_relaxed)) {
+        g_hookStatus.store(HookStatus::DisabledAtStartup, std::memory_order_release);
         SKSE::log::info("Disabled in the settings");
         return;
     }
@@ -618,11 +598,15 @@ void InstallHooks() {
         return;
     }
 
-    g_hooksInstalled.store(true, std::memory_order_release);
+    g_hookStatus.store(HookStatus::Installed, std::memory_order_release);
     SKSE::log::info("Hooks installed");
 }
 
-bool HooksInstalled() { return g_hooksInstalled.load(std::memory_order_acquire); }
+HookStatus GetHookStatus() { return g_hookStatus.load(std::memory_order_acquire); }
+
+ReductionStats GetReductionStats() {
+    return {g_reducedCount.load(std::memory_order_relaxed), g_savedBytes.load(std::memory_order_relaxed)};
+}
 
 namespace {
     void LogNameStats() {

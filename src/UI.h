@@ -22,4 +22,8 @@ namespace UI {
     namespace Browse {
         void __stdcall Render();
     }
+
+    namespace Help {
+        void __stdcall Render();
+    }
 }

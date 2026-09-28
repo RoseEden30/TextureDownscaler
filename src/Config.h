@@ -31,6 +31,27 @@ constexpr std::array<std::string_view, kCategoryCount> kCategoryNames{
     "Diffuse", "Normal", "Parallax", "Material", "Glow", "Mask"
 };
 
+// Suffix to category, following the BSShaderTextureSet slots. No two entries
+// can match the same name: a suffix only counts when the underscore lines up,
+// so "_msn" is never read as "_n". Anything unmatched is Diffuse.
+struct SuffixEntry {
+    std::string_view suffix;
+    Category         category;
+};
+
+constexpr std::array kSuffixes{
+    SuffixEntry{"_rmaos", Category::Material},
+    SuffixEntry{"_msn", Category::Normal},
+    SuffixEntry{"_em", Category::Mask},
+    SuffixEntry{"_sk", Category::Mask},
+    SuffixEntry{"_n", Category::Normal},
+    SuffixEntry{"_p", Category::Parallax},
+    SuffixEntry{"_g", Category::Glow},
+    SuffixEntry{"_m", Category::Mask},
+    SuffixEntry{"_s", Category::Mask},
+    SuffixEntry{"_b", Category::Mask},
+};
+
 struct FolderRule {
     std::string             folder;   // lower case, backslashes
     std::uint32_t           maxSize;

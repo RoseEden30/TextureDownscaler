@@ -17,9 +17,36 @@
 #include <utility>
 
 namespace {
+    constexpr ImGuiMCP::ImVec4 kGoodColour{0.45f, 0.85f, 0.45f, 1.0f};
     constexpr ImGuiMCP::ImVec4 kWarningColour{1.0f, 0.6f, 0.2f, 1.0f};
+    constexpr ImGuiMCP::ImVec4 kErrorColour{1.0f, 0.35f, 0.35f, 1.0f};
 
     constexpr std::array<std::uint32_t, 8> kSizes{0, 128, 256, 512, 1024, 2048, 4096, 8192};
+
+    void Tooltip(const char* text) { ImGuiMCP::SetItemTooltip("%s", text); }
+
+    const std::string& PluginVersion() {
+        static const std::string version = [] {
+            const auto v = SKSE::PluginDeclaration::GetSingleton()->GetVersion();
+            return std::format("{}.{}.{}", v.major(), v.minor(), v.patch());
+        }();
+        return version;
+    }
+
+    const std::string& SuffixList(Category category) {
+        static const auto lists = [] {
+            std::array<std::string, kCategoryCount> result;
+            result[static_cast<std::size_t>(Category::Diffuse)] = "everything else";
+
+            for (const auto& entry : kSuffixes) {
+                auto& list = result[static_cast<std::size_t>(entry.category)];
+                if (!list.empty()) list += "   ";
+                list += std::format("*{}.dds", entry.suffix);
+            }
+            return result;
+        }();
+        return lists[static_cast<std::size_t>(category)];
+    }
 
     void FillColumn() { ImGuiMCP::SetNextItemWidth(-FLT_MIN); }
 
@@ -232,7 +259,7 @@ namespace {
         if (dirty)
             ImGuiMCP::TextColored(kWarningColour, "Unsaved changes");
         else
-            ImGuiMCP::TextDisabled("Saved to TextureDownscaler.ini");
+            ImGuiMCP::Text("Saved to TextureDownscaler.ini");
     }
 }
 
@@ -244,30 +271,67 @@ void UI::Register() {
     SKSEMenuFramework::AddSectionItem("Categories", Categories::Render);
     SKSEMenuFramework::AddSectionItem("Folder rules", Folders::Render);
     SKSEMenuFramework::AddSectionItem("Browse folders", Browse::Render);
+    SKSEMenuFramework::AddSectionItem("Help", Help::Render);
+}
+
+namespace {
+    void RenderStatus(const Config& config, HookStatus status) {
+        switch (status) {
+            case HookStatus::Installed:
+                if (config.enabled) {
+                    ImGuiMCP::TextColored(kGoodColour, "Active");
+                } else {
+                    ImGuiMCP::TextColored(kWarningColour, "Paused");
+                    ImGuiMCP::SameLine();
+                    ImGuiMCP::TextWrapped("Textures load at full size until Enabled is ticked again.");
+                }
+                break;
+
+            case HookStatus::DisabledAtStartup:
+                ImGuiMCP::TextColored(kWarningColour, "Off since startup");
+                ImGuiMCP::TextWrapped("The game started with the plugin disabled, so it isn't running this "
+                                      "session. Tick Enabled, save, then restart the game.");
+                return;
+
+            case HookStatus::NotInstalled:
+                ImGuiMCP::TextColored(kErrorColour, "Not running");
+                ImGuiMCP::TextWrapped("The plugin couldn't start. TextureDownscaler.log says why.");
+                return;
+        }
+
+        const auto stats = GetReductionStats();
+        if (stats.textures == 0) {
+            ImGuiMCP::Text("No texture loaded at a reduced size yet.");
+            return;
+        }
+
+        const auto megabytes = static_cast<double>(stats.savedBytes) / (1024.0 * 1024.0);
+        const auto summary   = std::format("{} texture{} loaded at a reduced size this session, about {:.0f} MB "
+                                           "smaller in total.",
+                                           stats.textures, stats.textures == 1 ? "" : "s", megabytes);
+        ImGuiMCP::TextWrapped("%s", summary.c_str());
+    }
 }
 
 void __stdcall UI::General::Render() {
     auto& config = EditableConfig();
 
-    const auto em        = ImGuiMCP::GetFontSize();
-    const bool installed = HooksInstalled();
+    const auto em = ImGuiMCP::GetFontSize();
 
-    // Starting disabled skips hook installation, so there is nothing for the
-    // checkbox to switch back on before a restart.
-    ImGuiMCP::BeginDisabled(!installed);
+    ImGuiMCP::Text("Texture Downscaler %s", PluginVersion().c_str());
+    ImGuiMCP::Text("Loads textures at a smaller size to save video memory.");
+
+    ImGuiMCP::SeparatorText("Status");
+    RenderStatus(config, GetHookStatus());
+
+    ImGuiMCP::SeparatorText("Settings");
 
     bool enabled = config.enabled;
     if (ImGuiMCP::Checkbox("Enabled", &enabled)) {
         config.enabled = enabled;
         PublishConfig();
     }
-
-    ImGuiMCP::EndDisabled();
-
-    if (!installed)
-        ImGuiMCP::TextColored(kWarningColour, "Started disabled. Save, then restart the game.");
-
-    ImGuiMCP::Spacing();
+    Tooltip("When off, textures load at full size. Only affects textures loaded from now on.");
 
     static const char* const kLevels[] = {"Trace", "Debug", "Info", "Warning", "Error", "Fatal"};
 
@@ -278,8 +342,8 @@ void __stdcall UI::General::Render() {
         SetLogLevel(config.logLevel);
         PublishConfig();
     }
-
-    ImGuiMCP::TextDisabled("Debug lists every texture and its category.");
+    Tooltip("Debug writes a line to TextureDownscaler.log for every texture loaded at a reduced size, "
+            "with its type.");
 
     ImGuiMCP::Spacing();
     RenderSaveReload();
@@ -288,23 +352,53 @@ void __stdcall UI::General::Render() {
 void __stdcall UI::Categories::Render() {
     auto& config = EditableConfig();
 
-    ImGuiMCP::TextWrapped("Largest size allowed per texture type.");
+    ImGuiMCP::TextWrapped("The largest size a texture keeps, by type. The type comes from the file name, "
+                          "e.g. ironsword_n.dds is a Normal map.");
     ImGuiMCP::Spacing();
 
     bool changed = false;
 
+    const auto em        = ImGuiMCP::GetFontSize();
     const auto sizeWidth = SizeComboWidth();
 
-    for (std::size_t i = 0; i < kCategoryCount; ++i) {
-        ImGuiMCP::SetNextItemWidth(sizeWidth);
-        if (RenderSizeCombo(std::string(kCategoryNames[i]).c_str(), config.maxSize[i]))
-            changed = true;
+    constexpr auto kTableFlags = ImGuiMCP::ImGuiTableFlags_BordersInnerH |
+                                 ImGuiMCP::ImGuiTableFlags_RowBg |
+                                 ImGuiMCP::ImGuiTableFlags_SizingFixedFit;
+
+    if (ImGuiMCP::BeginTable("categories", 3, kTableFlags)) {
+        ImGuiMCP::TableSetupColumn("Type", ImGuiMCP::ImGuiTableColumnFlags_WidthFixed);
+        ImGuiMCP::TableSetupColumn("Files", ImGuiMCP::ImGuiTableColumnFlags_WidthStretch);
+        ImGuiMCP::TableSetupColumn("Max size", ImGuiMCP::ImGuiTableColumnFlags_WidthFixed, sizeWidth + em);
+        ImGuiMCP::TableHeadersRow();
+
+        for (std::size_t i = 0; i < kCategoryCount; ++i) {
+            ImGuiMCP::PushID(static_cast<int>(i));
+            ImGuiMCP::TableNextRow();
+
+            ImGuiMCP::TableSetColumnIndex(0);
+            ImGuiMCP::AlignTextToFramePadding();
+            const std::string name(kCategoryNames[i]);
+            ImGuiMCP::TextUnformatted(static_cast<Category>(i) == Category::Material ? "Material/PBR"
+                                                                                    : name.c_str());
+
+            ImGuiMCP::TableSetColumnIndex(1);
+            ImGuiMCP::AlignTextToFramePadding();
+            ImGuiMCP::TextUnformatted(SuffixList(static_cast<Category>(i)).c_str());
+
+            ImGuiMCP::TableSetColumnIndex(2);
+            FillColumn();
+            if (RenderSizeCombo("##size", config.maxSize[i])) changed = true;
+
+            ImGuiMCP::PopID();
+        }
+
+        ImGuiMCP::EndTable();
     }
 
     if (changed) PublishConfig();
 
     ImGuiMCP::Spacing();
-    ImGuiMCP::TextDisabled("Takes effect as textures load. Ones already in memory keep their size.");
+    ImGuiMCP::Text("Folder rules override these. Textures already in memory keep their size.");
 
     ImGuiMCP::Spacing();
     RenderSaveReload();
@@ -315,10 +409,53 @@ void __stdcall UI::Folders::Render() {
 
     const auto em = ImGuiMCP::GetFontSize();
 
-    ImGuiMCP::TextWrapped("First match wins. Folder rules override the type limits.");
-    ImGuiMCP::Spacing();
+    ImGuiMCP::TextWrapped("A rule applies to every texture whose path contains its text, and overrides the "
+                          "type limit. Rules are checked from the top and the first match wins.");
 
     bool changed = false;
+
+    const auto typeWidth = CategoryComboWidth();
+    const auto sizeWidth = SizeComboWidth();
+
+    ImGuiMCP::SeparatorText("New rule");
+    {
+        static char          newFolder[256] = "";
+        static std::uint32_t newSize        = 1024;
+        static int           newCategory    = 0;
+
+        ImGuiMCP::SetNextItemWidth(typeWidth);
+        RenderCategoryCombo("##newtype", newCategory);
+        Tooltip("Any type, or only textures of this type.");
+
+        ImGuiMCP::SameLine();
+        ImGuiMCP::SetNextItemWidth(em * 16.0f);
+        ImGuiMCP::InputTextWithHint("##newfolder", "Text to match, e.g. \\armor\\", newFolder,
+                                    sizeof(newFolder));
+        Tooltip("Matched anywhere in the path. Put backslashes on both sides to match a whole folder "
+                "name rather than part of one.");
+
+        ImGuiMCP::SameLine();
+        ImGuiMCP::SetNextItemWidth(sizeWidth);
+        RenderSizeCombo("##newsize", newSize);
+
+        ImGuiMCP::SameLine();
+        ImGuiMCP::BeginDisabled(newFolder[0] == '\0');
+        if (ImGuiMCP::Button("Add")) {
+            std::string folder(newFolder);
+            for (auto& c : folder) c = Fold(c);
+
+            config.folders.insert(config.folders.begin(),
+                                  FolderRule{std::move(folder), newSize, CategoryFromCombo(newCategory)});
+
+            newFolder[0] = '\0';
+            changed      = true;
+        }
+        ImGuiMCP::EndDisabled();
+        Tooltip("New rules go to the top, where a narrow rule belongs.");
+    }
+
+    const auto header = std::format("Rules ({})", config.folders.size());
+    ImGuiMCP::SeparatorText(header.c_str());
 
     auto removeIndex = static_cast<std::size_t>(-1);
     std::optional<std::pair<std::size_t, std::size_t>> moveIndices;
@@ -334,23 +471,18 @@ void __stdcall UI::Folders::Render() {
     constexpr auto kFixed   = ImGuiMCP::ImGuiTableColumnFlags_WidthFixed;
     constexpr auto kStretch = ImGuiMCP::ImGuiTableColumnFlags_WidthStretch;
 
-    const auto typeWidth = CategoryComboWidth();
-    const auto sizeWidth = SizeComboWidth();
-
-    // Everything after ### is the identity, so the count can change without
-    // the header forgetting whether it was folded.
-    const auto header = std::format("Rules ({})###rules", config.folders.size());
-
     const auto ruleRowHeight = ImGuiMCP::GetFrameHeightWithSpacing();
 
-    if (ImGuiMCP::CollapsingHeader(header.c_str()) &&
-        ImGuiMCP::BeginTable("folder-rules", 5, kTableFlags,
-                             TableHeight(ruleRowHeight, ruleRowHeight))) {
+    if (config.folders.empty()) {
+        ImGuiMCP::Text("No rules. Every texture follows the limit for its type.");
+    } else if (ImGuiMCP::BeginTable("folder-rules", 6, kTableFlags, TableHeight(ruleRowHeight))) {
+        ImGuiMCP::TableSetupColumn("#", kFixed);
         ImGuiMCP::TableSetupColumn("Type", kFixed, typeWidth + em);
-        ImGuiMCP::TableSetupColumn("Folder", kStretch);
+        ImGuiMCP::TableSetupColumn("Text to match", kStretch);
         ImGuiMCP::TableSetupColumn("Max size", kFixed, sizeWidth + em);
         ImGuiMCP::TableSetupColumn("##order", kFixed);
         ImGuiMCP::TableSetupColumn("##remove", kFixed);
+        ImGuiMCP::TableSetupScrollFreeze(0, 1);
         ImGuiMCP::TableHeadersRow();
 
         for (std::size_t i = 0; i < config.folders.size(); ++i) {
@@ -360,6 +492,10 @@ void __stdcall UI::Folders::Render() {
             ImGuiMCP::TableNextRow();
 
             ImGuiMCP::TableSetColumnIndex(0);
+            ImGuiMCP::AlignTextToFramePadding();
+            ImGuiMCP::Text("%d", static_cast<int>(i) + 1);
+
+            ImGuiMCP::TableSetColumnIndex(1);
             int selected = rule.category ? static_cast<int>(*rule.category) + 1 : 0;
             FillColumn();
             if (RenderCategoryCombo("##type", selected)) {
@@ -367,7 +503,7 @@ void __stdcall UI::Folders::Render() {
                 changed       = true;
             }
 
-            ImGuiMCP::TableSetColumnIndex(1);
+            ImGuiMCP::TableSetColumnIndex(2);
             char folder[256];
             std::snprintf(folder, sizeof(folder), "%s", rule.folder.c_str());
             FillColumn();
@@ -379,32 +515,40 @@ void __stdcall UI::Folders::Render() {
 
             std::size_t shadowedBy = 0;
             if (IsRuleShadowed(config, i, &shadowedBy))
-                ImGuiMCP::TextColored(kWarningColour, "Never used, row %d matches first",
+                ImGuiMCP::TextColored(kWarningColour, "Never used, rule %d matches first",
                                       static_cast<int>(shadowedBy) + 1);
 
-            ImGuiMCP::TableSetColumnIndex(2);
+            ImGuiMCP::TableSetColumnIndex(3);
             FillColumn();
             if (RenderSizeCombo("##size", rule.maxSize)) changed = true;
 
-            ImGuiMCP::TableSetColumnIndex(3);
+            ImGuiMCP::TableSetColumnIndex(4);
 
             const auto last = config.folders.size() - 1;
 
             ImGuiMCP::BeginDisabled(i == 0);
-            if (ImGuiMCP::Button("Top")) moveIndices = {i, 0};
-            ImGuiMCP::SameLine();
-            if (ImGuiMCP::Button("Up")) moveIndices = {i, i - 1};
+            if (ImGuiMCP::ArrowButton("##up", ImGuiMCP::ImGuiDir_Up)) moveIndices = {i, i - 1};
+            Tooltip("Move up");
             ImGuiMCP::EndDisabled();
 
             ImGuiMCP::SameLine();
             ImGuiMCP::BeginDisabled(i == last);
-            if (ImGuiMCP::Button("Down")) moveIndices = {i, i + 1};
-            ImGuiMCP::SameLine();
-            if (ImGuiMCP::Button("Bottom")) moveIndices = {i, last};
+            if (ImGuiMCP::ArrowButton("##down", ImGuiMCP::ImGuiDir_Down)) moveIndices = {i, i + 1};
+            Tooltip("Move down");
             ImGuiMCP::EndDisabled();
 
-            ImGuiMCP::TableSetColumnIndex(4);
-            if (ImGuiMCP::Button("Remove")) removeIndex = i;
+            ImGuiMCP::SameLine();
+            ImGuiMCP::BeginDisabled(i == 0);
+            if (ImGuiMCP::SmallButton("Top")) moveIndices = {i, 0};
+            ImGuiMCP::EndDisabled();
+
+            ImGuiMCP::SameLine();
+            ImGuiMCP::BeginDisabled(i == last);
+            if (ImGuiMCP::SmallButton("Bottom")) moveIndices = {i, last};
+            ImGuiMCP::EndDisabled();
+
+            ImGuiMCP::TableSetColumnIndex(5);
+            if (ImGuiMCP::SmallButton("Remove")) removeIndex = i;
 
             ImGuiMCP::PopID();
         }
@@ -419,35 +563,6 @@ void __stdcall UI::Folders::Render() {
     } else if (moveIndices) {
         MoveRule(config.folders, moveIndices->first, moveIndices->second);
         changed = true;
-    }
-
-    ImGuiMCP::Spacing();
-
-    if (ImGuiMCP::CollapsingHeader("Add a rule")) {
-        static char          newFolder[256] = "";
-        static std::uint32_t newSize        = 1024;
-        static int           newCategory    = 0;
-
-        ImGuiMCP::SetNextItemWidth(em * 20.0f);
-        ImGuiMCP::InputText("Folder##new", newFolder, sizeof(newFolder));
-        ImGuiMCP::SetNextItemWidth(sizeWidth);
-        RenderSizeCombo("Max size##new", newSize);
-        ImGuiMCP::SetNextItemWidth(typeWidth);
-        RenderCategoryCombo("Type##new", newCategory);
-
-        if (ImGuiMCP::Button("Add") && newFolder[0] != '\0') {
-            std::string folder(newFolder);
-            for (auto& c : folder) c = Fold(c);
-
-            config.folders.insert(config.folders.begin(),
-                                  FolderRule{std::move(folder), newSize,
-                                             CategoryFromCombo(newCategory)});
-
-            newFolder[0] = '\0';
-            changed      = true;
-        }
-
-        ImGuiMCP::TextDisabled("New rules go to the top, where a narrow rule belongs.");
     }
 
     // Once per frame, after every edit has landed in the working copy.
@@ -539,8 +654,10 @@ void __stdcall UI::Browse::Render() {
     static bool          hideUnused      = false;
     static bool          hideRuled       = false;
 
-    ImGuiMCP::TextDisabled("Folders under Data\\textures and in the game's own archives.");
-    ImGuiMCP::Spacing();
+    ImGuiMCP::TextWrapped("Every folder under Data\\textures, plus the ones the base game keeps in its "
+                          "archives. Useful to see where a rule is worth adding.");
+
+    ImGuiMCP::SeparatorText("Usage");
 
     bool track = config.trackUsedFolders;
     if (ImGuiMCP::Checkbox("Track used folders", &track)) {
@@ -555,11 +672,12 @@ void __stdcall UI::Browse::Render() {
         ClearUsedFolders();
         RebuildRows();
     }
+    Tooltip("Sets every Used count back to zero.");
 
     if (!config.trackUsedFolders)
         ImGuiMCP::TextColored(kWarningColour, "Tracking is off, the Used column won't fill in.");
 
-    ImGuiMCP::Spacing();
+    ImGuiMCP::SeparatorText("Filter");
 
     ImGuiMCP::SetNextItemWidth(-FLT_MIN);
     ImGuiMCP::InputTextWithHint("##filter", "Filter by name", filter, sizeof(filter));
@@ -568,7 +686,7 @@ void __stdcall UI::Browse::Render() {
     ImGuiMCP::SetItemTooltip("Only folders a texture has been loaded from.");
     ImGuiMCP::SameLine();
     ImGuiMCP::Checkbox("Loose files only", &hideArchiveOnly);
-    ImGuiMCP::SetItemTooltip("Hide folders that only exist inside an archive.");
+    ImGuiMCP::SetItemTooltip("Hide folders with no loose .dds file of their own.");
     ImGuiMCP::SameLine();
     ImGuiMCP::Checkbox("Hide folders with a rule", &hideRuled);
     ImGuiMCP::SetItemTooltip("Hide folders that already have a rule of their own.");
@@ -582,6 +700,8 @@ void __stdcall UI::Browse::Render() {
     ImGuiMCP::SameLine(0.0f, em);
     ImGuiMCP::SetNextItemWidth(CategoryComboWidth());
     RenderCategoryCombo("Type", addCategory);
+    ImGuiMCP::SameLine();
+    ImGuiMCP::Text("(used by the Add buttons below)");
 
     ImGuiMCP::Spacing();
 
@@ -615,7 +735,7 @@ void __stdcall UI::Browse::Render() {
     }
 
     const auto rowHeight  = RowHeight();
-    const auto filesWidth = std::max(TextWidth("Loose files"), TextWidth("in archive")) + em;
+    const auto filesWidth = TextWidth("Loose files") + em;
     const auto usedWidth  = std::max(TextWidth("Used"), TextWidth("000000")) + em;
     const auto addWidth   = std::max(ButtonWidth("Add"), ButtonWidth("Remove")) + em;
 
@@ -666,7 +786,7 @@ void __stdcall UI::Browse::Render() {
                     if (row.files > 0)
                         ImGuiMCP::Text("%u", row.files);
                     else
-                        ImGuiMCP::TextDisabled("in archive");
+                        ImGuiMCP::TextDisabled("-");
 
                     ImGuiMCP::TableSetColumnIndex(2);
                     if (row.used > 0)
@@ -703,11 +823,67 @@ void __stdcall UI::Browse::Render() {
         changed = true;
     }
 
-    ImGuiMCP::TextDisabled("%zu of %zu folders. Used fills in as the game loads textures.",
-                           visible.size(), g_rows.size());
+    ImGuiMCP::Text("%zu of %zu folders. Used fills in as the game loads textures.",
+                   visible.size(), g_rows.size());
 
     if (changed) PublishConfig();
 
     ImGuiMCP::Spacing();
     RenderSaveReload();
+}
+
+namespace {
+    void Paragraph(const char* text) { ImGuiMCP::TextWrapped("%s", text); }
+
+    void Example(const char* line) {
+        ImGuiMCP::Indent();
+        ImGuiMCP::TextUnformatted(line);
+        ImGuiMCP::Unindent();
+    }
+}
+
+void __stdcall UI::Help::Render() {
+    ImGuiMCP::SeparatorText("How it works");
+    Paragraph("A .dds texture carries smaller copies of itself, each half the size of the one above. The "
+              "plugin skips the largest ones and hands the game the first that fits your limit. Nothing is "
+              "resampled and no file on disk is changed.");
+    Paragraph("A limit applies to the longer side: a 4096x2048 texture capped at 1024 loads at 1024x512.");
+    Paragraph("Changes apply to textures loaded from then on. A texture already in memory keeps its size "
+              "until the game loads it again.");
+    Paragraph("Textures without smaller copies, cubemaps, texture arrays and render targets are never touched.");
+
+    ImGuiMCP::SeparatorText("Texture types");
+    Paragraph("The type comes from the end of the file name, see Categories. A texture whose name can't be "
+              "read counts as Diffuse.");
+
+    ImGuiMCP::SeparatorText("Folder rules");
+    Paragraph("A rule matches anywhere in the path, file name included, and wins over the type limit. Case "
+              "and slash direction don't matter. Full size leaves matching textures untouched.");
+    Example("\\weapons\\silver\\  2048");
+    Paragraph("Close a rule on both sides or it catches more than you meant: sky also matches "
+              "actors\\character\\facegendata\\facetint\\skyrim.esm, \\sky\\ does not.");
+    Paragraph("Give a rule a type and it only covers that type. Rules are checked from the top and the first "
+              "match wins, so the narrow rule goes above the broad one:");
+    Example("1.  Normal  \\actors\\character\\  2048");
+    Example("2.  Any     \\actors\\character\\  Full size");
+    Paragraph("That caps character normal maps at 2048 and leaves the rest of the folder alone. Swap them "
+              "and the Normal rule never applies.");
+
+    ImGuiMCP::SeparatorText("Browse folders");
+    Paragraph("Lists every folder under Data\\textures, plus the ones the base game keeps in its archives.");
+    Paragraph("Loose files: .dds files sitting directly in that folder. A dash means there are none: the "
+              "folder only holds subfolders, or only exists in an archive.");
+    Paragraph("Used: how many textures the game loaded from that folder while tracking was on. A texture "
+              "loaded twice counts twice. Tracking costs a little on every texture load, so it is off by "
+              "default.");
+    Paragraph("Folders packed in a mod's own archive only appear once tracking has seen one of their "
+              "textures load.");
+
+    ImGuiMCP::SeparatorText("Saving");
+    Paragraph("Changes made in this menu apply at once. Save writes them to "
+              "Data\\SKSE\\Plugins\\TextureDownscaler.ini. Reload drops unsaved changes and reads the file "
+              "again.");
+    Paragraph("With Log level at Debug, TextureDownscaler.log gets a line for every texture loaded at a "
+              "reduced size, with its name and type. The log sits in the SKSE folder under "
+              "Documents\\My Games.");
 }
