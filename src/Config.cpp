@@ -273,7 +273,7 @@ void SaveConfig() {
     if (sameShape) {
         auto key = onDisk.begin();
         for (const auto& folder : config.folders) {
-            if (RuleName(folder) != key->pItem) {
+            if (!EqualsFolded(RuleName(folder), key->pItem)) {
                 sameShape = false;
                 break;
             }
