@@ -571,7 +571,7 @@ void __stdcall UI::Browse::Render() {
     ImGuiMCP::SetItemTooltip("Hide folders that only exist inside an archive.");
     ImGuiMCP::SameLine();
     ImGuiMCP::Checkbox("Hide folders with a rule", &hideRuled);
-    ImGuiMCP::SetItemTooltip("Hide folders a rule already covers.");
+    ImGuiMCP::SetItemTooltip("Hide folders that already have a rule of their own.");
 
     // Kept apart from the filters above: these two decide what the Add buttons
     // write, not what the list shows.
