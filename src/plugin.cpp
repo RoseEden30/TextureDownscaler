@@ -19,7 +19,7 @@
 #include "UI.h"
 
 namespace {
-    // Touched from the render thread, read when a save is loaded.
+    // Touched from the texture loader threads, read when a save is loaded.
     std::atomic<std::uint64_t> g_reducedCount{0};
     std::atomic<std::uint64_t> g_savedBytes{0};
 
@@ -105,8 +105,8 @@ namespace {
         return total;
     }
 
-    // Guarded read: the values examined on the stack are arbitrary, and
-    // following one can land on a page that isn't mapped.
+    // Guarded read: the stream may belong to another plugin or be dead, and
+    // following it can land on a page that isn't mapped.
     __declspec(noinline) bool TryReadPointer(std::uintptr_t address, std::uintptr_t& out) {
         __try {
             out = *reinterpret_cast<const std::uintptr_t*>(address);
@@ -338,8 +338,6 @@ namespace {
         return skip;
     }
 
-    // Everything that can be decided from the description alone, before paying
-    // for a name.
     // Whether the texture came out of a file, as opposed to being a surface the
     // engine draws into. Only these carry a name worth resolving.
     bool IsFromFile(const D3D11_TEXTURE2D_DESC& desc, const D3D11_SUBRESOURCE_DATA* data) {
@@ -367,12 +365,9 @@ namespace {
                                        D3D11_RESOURCE_MISC_GENERATE_MIPS;
         if (desc.MiscFlags & kRejectedMisc) return false;
 
-        // A texture the CPU can still write to gets rewritten at runtime by code
-        // that works out offsets from the size it was created at.
+        // CPU-writable, dynamic and staging textures get rewritten at runtime by
+        // code that works out offsets from the size they were created at.
         if (desc.CPUAccessFlags != 0) return false;
-
-        // Dynamic and staging textures get rewritten at runtime by code that
-        // works out offsets from the original size.
         return desc.Usage == D3D11_USAGE_DEFAULT || desc.Usage == D3D11_USAGE_IMMUTABLE;
     }
 
