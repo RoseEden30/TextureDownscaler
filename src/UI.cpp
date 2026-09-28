@@ -275,6 +275,31 @@ void UI::Register() {
 }
 
 namespace {
+    void RenderVram(const Config& config) {
+        const auto vram = GetVramInfo();
+
+        if (!vram.available) {
+            if (config.vramThreshold != 0)
+                ImGuiMCP::TextColored(kWarningColour, "Video memory usage can't be read, textures are always "
+                                                      "reduced.");
+            return;
+        }
+
+        constexpr double kGigabyte = 1024.0 * 1024.0 * 1024.0;
+        const auto usage = std::format("Video memory: {:.1f} of {:.1f} GB ({}%)",
+                                       static_cast<double>(vram.usage) / kGigabyte,
+                                       static_cast<double>(vram.budget) / kGigabyte, vram.usage * 100 / vram.budget);
+        ImGuiMCP::TextUnformatted(usage.c_str());
+
+        if (!config.enabled || config.vramThreshold == 0) return;
+
+        const auto state = vram.reducing
+                               ? std::format("Textures are being reduced (threshold {}%).", config.vramThreshold)
+                               : std::format("Textures load at full size until video memory reaches {}%.",
+                                             config.vramThreshold);
+        ImGuiMCP::TextWrapped("%s", state.c_str());
+    }
+
     void RenderStatus(const Config& config, HookStatus status) {
         switch (status) {
             case HookStatus::Installed:
@@ -285,6 +310,7 @@ namespace {
                     ImGuiMCP::SameLine();
                     ImGuiMCP::TextWrapped("Textures load at full size until Enabled is ticked again.");
                 }
+                RenderVram(config);
                 break;
 
             case HookStatus::DisabledAtStartup:
@@ -332,6 +358,18 @@ void __stdcall UI::General::Render() {
         PublishConfig();
     }
     Tooltip("When off, textures load at full size. Only affects textures loaded from now on.");
+
+    int threshold = static_cast<int>(config.vramThreshold);
+    ImGuiMCP::SetNextItemWidth(em * 12.0f);
+    if (ImGuiMCP::SliderInt("Reduce above VRAM", &threshold, 0, 100, threshold == 0 ? "Always" : "%d%%")) {
+        const auto snapped = static_cast<std::uint32_t>((threshold + 2) / 5 * 5);
+        if (snapped != config.vramThreshold) {
+            config.vramThreshold = snapped;
+            PublishConfig();
+        }
+    }
+    Tooltip("Textures load at full size until the game uses this share of its video memory budget. "
+            "Always reduces them all the time.");
 
     static const char* const kLevels[] = {"Trace", "Debug", "Info", "Warning", "Error", "Fatal"};
 
@@ -878,6 +916,13 @@ void __stdcall UI::Help::Render() {
               "default.");
     Paragraph("Folders packed in a mod's own archive only appear once tracking has seen one of their "
               "textures load.");
+
+    ImGuiMCP::SeparatorText("Video memory");
+    Paragraph("Reduce above VRAM, on the General page, keeps textures at full size until video memory usage "
+              "reaches that share of the budget. Usage is checked a few times a second, and textures go back "
+              "to full size once it drops 5% below the threshold.");
+    Paragraph("It doesn't shrink textures already loaded. It stops usage from climbing further, and memory "
+              "comes back as the game unloads textures, for example when you change area.");
 
     ImGuiMCP::SeparatorText("Saving");
     Paragraph("Changes made in this menu apply at once. Save writes them to "

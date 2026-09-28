@@ -65,6 +65,10 @@ struct Config {
     bool          trackUsedFolders = false;
     std::uint32_t logLevel         = 2;
 
+    // Percent of the video memory budget above which textures get reduced.
+    // Zero reduces them all the time.
+    std::uint32_t vramThreshold = 0;
+
     // Zero means that type is left at full size.
     std::array<std::uint32_t, kCategoryCount> maxSize{};
 
@@ -97,6 +101,9 @@ void PublishConfig();
 extern std::atomic<bool>          g_enabled;
 extern std::atomic<bool>          g_trackUsedFolders;
 extern std::atomic<std::uint32_t> g_smallestLimit;
+extern std::atomic<std::uint32_t> g_vramThreshold;
+
+constexpr std::uint32_t kMinVramThreshold = 5;
 
 // Writes the default ini if none exists, reads it, applies the log level and
 // publishes. Called at startup, and again by the menu to reload from disk.

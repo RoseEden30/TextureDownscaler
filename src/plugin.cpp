@@ -357,6 +357,78 @@ namespace {
         return desc.Width > smallest || desc.Height > smallest;
     }
 
+    // Never released: it has to outlive every hook call, and releasing it at
+    // exit could run after DXGI itself is gone.
+    std::atomic<IDXGIAdapter3*> g_adapter{nullptr};
+
+    constexpr ULONGLONG     kVramPollMs     = 250;
+    constexpr std::uint64_t kVramHysteresis = 5;
+    static_assert(kVramHysteresis <= kMinVramThreshold);
+
+    std::atomic<ULONGLONG>     g_nextVramPoll{0};
+    std::atomic<std::uint64_t> g_vramUsage{0};
+    std::atomic<std::uint64_t> g_vramBudget{0};
+    std::atomic<bool>          g_vramHigh{false};
+
+    IDXGIAdapter3* QueryAdapter(REX::W32::ID3D11Device* device) {
+        IDXGIDevice* dxgiDevice = nullptr;
+        if (FAILED(reinterpret_cast<::ID3D11Device*>(device)->QueryInterface(IID_PPV_ARGS(&dxgiDevice))))
+            return nullptr;
+
+        IDXGIAdapter* adapter = nullptr;
+        const HRESULT hr      = dxgiDevice->GetAdapter(&adapter);
+        dxgiDevice->Release();
+        if (FAILED(hr)) return nullptr;
+
+        IDXGIAdapter3* adapter3 = nullptr;
+        if (FAILED(adapter->QueryInterface(IID_PPV_ARGS(&adapter3)))) adapter3 = nullptr;
+        adapter->Release();
+
+        return adapter3;
+    }
+
+    // At most one query per interval, by whichever thread gets there first.
+    void PollVram() {
+        auto* adapter = g_adapter.load(std::memory_order_acquire);
+        if (!adapter) return;
+
+        const auto now  = GetTickCount64();
+        auto       next = g_nextVramPoll.load(std::memory_order_relaxed);
+        if (now < next ||
+            !g_nextVramPoll.compare_exchange_strong(next, now + kVramPollMs, std::memory_order_relaxed))
+            return;
+
+        DXGI_QUERY_VIDEO_MEMORY_INFO info{};
+        if (FAILED(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info)) || info.Budget == 0)
+            return;
+
+        g_vramUsage.store(info.CurrentUsage, std::memory_order_relaxed);
+        g_vramBudget.store(info.Budget, std::memory_order_relaxed);
+
+        const std::uint64_t threshold = g_vramThreshold.load(std::memory_order_relaxed);
+        if (threshold == 0) return;
+
+        const bool high    = g_vramHigh.load(std::memory_order_relaxed);
+        const auto used    = info.CurrentUsage * 100;
+        const auto limit   = high ? threshold - kVramHysteresis : threshold;
+        const bool nowHigh = used >= limit * info.Budget;
+
+        if (nowHigh == high) return;
+
+        g_vramHigh.store(nowHigh, std::memory_order_relaxed);
+        SKSE::log::info("Video memory at {}%, textures {}", used / info.Budget,
+                        nowHigh ? "now reduced" : "back to full size");
+    }
+
+    bool VramAllowsReducing() {
+        if (g_vramThreshold.load(std::memory_order_relaxed) == 0) return true;
+        if (!g_adapter.load(std::memory_order_relaxed)) return true;
+
+        PollVram();
+        if (g_vramBudget.load(std::memory_order_relaxed) == 0) return true;
+        return g_vramHigh.load(std::memory_order_relaxed);
+    }
+
     // REX::W32::ID3D11Device vtable slots.
     constexpr std::size_t kSlot_CreateTexture2D          = 5;
     constexpr std::size_t kSlot_CreateShaderResourceView = 7;
@@ -384,7 +456,7 @@ namespace {
         if (!desc || !IsFromFile(*desc, data))
             return g_originalCreateTexture2D(self, desc, data, out);
 
-        const bool reduce = WorthReducing(*desc);
+        const bool reduce = WorthReducing(*desc) && VramAllowsReducing();
         const bool track = g_trackUsedFolders.load(std::memory_order_relaxed);
 
         // Nothing to decide and nobody to tell, so the name is never looked up.
@@ -574,6 +646,10 @@ void InstallHooks() {
         return;
     }
 
+    g_adapter.store(QueryAdapter(device), std::memory_order_release);
+    if (!g_adapter.load(std::memory_order_relaxed))
+        SKSE::log::warn("Video memory usage can't be read, VramThreshold has no effect");
+
     // The view hook has to be live before the first reduced texture exists,
     // otherwise a view could be built against a chain that no longer matches
     // its description.
@@ -603,6 +679,18 @@ void InstallHooks() {
 }
 
 HookStatus GetHookStatus() { return g_hookStatus.load(std::memory_order_acquire); }
+
+VramInfo GetVramInfo() {
+    PollVram();
+
+    VramInfo info;
+    info.usage     = g_vramUsage.load(std::memory_order_relaxed);
+    info.budget    = g_vramBudget.load(std::memory_order_relaxed);
+    info.available = info.budget != 0;
+    info.reducing  = !info.available || g_vramThreshold.load(std::memory_order_relaxed) == 0 ||
+                    g_vramHigh.load(std::memory_order_relaxed);
+    return info;
+}
 
 ReductionStats GetReductionStats() {
     return {g_reducedCount.load(std::memory_order_relaxed), g_savedBytes.load(std::memory_order_relaxed)};

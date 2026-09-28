@@ -3,7 +3,7 @@
 
 cmake_minimum_required(VERSION 3.21)
 
-project(TextureDownscaler VERSION 2.5.0 LANGUAGES CXX)
+project(TextureDownscaler VERSION 2.6.0 LANGUAGES CXX)
 
 set(PLUGIN_AUTHOR "RoseEden" CACHE STRING "Author name baked into the plugin declaration")
 

@@ -20,3 +20,12 @@ struct ReductionStats {
 };
 
 ReductionStats GetReductionStats();
+
+struct VramInfo {
+    bool          available = false;
+    bool          reducing  = true;
+    std::uint64_t usage     = 0;
+    std::uint64_t budget    = 0;
+};
+
+VramInfo GetVramInfo();

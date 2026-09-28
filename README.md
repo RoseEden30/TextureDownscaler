@@ -74,6 +74,12 @@ Those two keep doors at full size except for their normal maps.
 
 `LogLevel=1` writes a line for each texture loaded at a reduced size, with its name and the type it was read as.
 
+### Video memory
+
+`VramThreshold=85` only reduces textures once the game uses 85% of its video memory budget. Below that, textures load at full size. They go back to full size once usage drops 5% below the threshold. `0`, the default, reduces them all the time.
+
+It doesn't shrink textures already in memory. It stops usage from climbing further, and memory comes back as the game unloads textures.
+
 ## In-game menu
 
 With [SKSE Menu Framework](https://www.nexusmods.com/skyrimspecialedition/mods/120352) installed, the settings can also be edited in game, under TextureDownscaler. Changes apply to the next texture that loads and can be written back to the ini from any page.
