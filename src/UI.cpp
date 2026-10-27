@@ -369,7 +369,7 @@ void __stdcall UI::General::Render() {
         }
     }
     Tooltip("Textures load at full size until the game uses this share of its video memory budget. "
-            "Always reduces them all the time.");
+            "Always reduces them all the time. 70-80% is recommended, higher leaves little headroom.");
 
     static const char* const kLevels[] = {"Trace", "Debug", "Info", "Warning", "Error", "Fatal"};
 

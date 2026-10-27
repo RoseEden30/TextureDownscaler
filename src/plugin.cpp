@@ -370,6 +370,22 @@ namespace {
     std::atomic<std::uint64_t> g_vramBudget{0};
     std::atomic<bool>          g_vramHigh{false};
 
+    // Full size bytes created since the last query, so a burst can't overshoot.
+    std::atomic<std::uint64_t> g_vramPending{0};
+
+    void UpdateVramHigh(std::uint64_t usage, std::uint64_t budget, std::uint64_t threshold) {
+        bool       high    = g_vramHigh.load(std::memory_order_relaxed);
+        const auto used    = usage * 100;
+        const auto limit   = high ? threshold - kVramHysteresis : threshold;
+        const bool nowHigh = used >= limit * budget;
+
+        if (nowHigh == high || !g_vramHigh.compare_exchange_strong(high, nowHigh, std::memory_order_relaxed))
+            return;
+
+        SKSE::log::info("Video memory at {}%, textures {}", used / budget,
+                        nowHigh ? "now reduced" : "back to full size");
+    }
+
     IDXGIAdapter3* QueryAdapter(REX::W32::ID3D11Device* device) {
         IDXGIDevice* dxgiDevice = nullptr;
         if (FAILED(reinterpret_cast<::ID3D11Device*>(device)->QueryInterface(IID_PPV_ARGS(&dxgiDevice))))
@@ -398,9 +414,14 @@ namespace {
             !g_nextVramPoll.compare_exchange_strong(next, now + kVramPollMs, std::memory_order_relaxed))
             return;
 
+        // Before the query: better counted twice than missed.
+        const auto pending = g_vramPending.exchange(0, std::memory_order_relaxed);
+
         DXGI_QUERY_VIDEO_MEMORY_INFO info{};
-        if (FAILED(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info)) || info.Budget == 0)
+        if (FAILED(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info)) || info.Budget == 0) {
+            g_vramPending.fetch_add(pending, std::memory_order_relaxed);
             return;
+        }
 
         g_vramUsage.store(info.CurrentUsage, std::memory_order_relaxed);
         g_vramBudget.store(info.Budget, std::memory_order_relaxed);
@@ -408,24 +429,22 @@ namespace {
         const std::uint64_t threshold = g_vramThreshold.load(std::memory_order_relaxed);
         if (threshold == 0) return;
 
-        const bool high    = g_vramHigh.load(std::memory_order_relaxed);
-        const auto used    = info.CurrentUsage * 100;
-        const auto limit   = high ? threshold - kVramHysteresis : threshold;
-        const bool nowHigh = used >= limit * info.Budget;
-
-        if (nowHigh == high) return;
-
-        g_vramHigh.store(nowHigh, std::memory_order_relaxed);
-        SKSE::log::info("Video memory at {}%, textures {}", used / info.Budget,
-                        nowHigh ? "now reduced" : "back to full size");
+        UpdateVramHigh(info.CurrentUsage, info.Budget, threshold);
     }
 
     bool VramAllowsReducing() {
-        if (g_vramThreshold.load(std::memory_order_relaxed) == 0) return true;
+        const std::uint64_t threshold = g_vramThreshold.load(std::memory_order_relaxed);
+        if (threshold == 0) return true;
         if (!g_adapter.load(std::memory_order_relaxed)) return true;
 
         PollVram();
-        if (g_vramBudget.load(std::memory_order_relaxed) == 0) return true;
+        const auto budget = g_vramBudget.load(std::memory_order_relaxed);
+        if (budget == 0) return true;
+        if (g_vramHigh.load(std::memory_order_relaxed)) return true;
+
+        const auto predicted = g_vramUsage.load(std::memory_order_relaxed) +
+                               g_vramPending.load(std::memory_order_relaxed);
+        UpdateVramHigh(predicted, budget, threshold);
         return g_vramHigh.load(std::memory_order_relaxed);
     }
 
@@ -456,8 +475,12 @@ namespace {
         if (!desc || !IsFromFile(*desc, data))
             return g_originalCreateTexture2D(self, desc, data, out);
 
-        const bool reduce = WorthReducing(*desc) && VramAllowsReducing();
+        const bool worth  = WorthReducing(*desc);
+        const bool reduce = worth && VramAllowsReducing();
         const bool track = g_trackUsedFolders.load(std::memory_order_relaxed);
+
+        if (worth && !reduce)
+            g_vramPending.fetch_add(EstimateSavedBytes(*desc, desc->MipLevels), std::memory_order_relaxed);
 
         // Nothing to decide and nobody to tell, so the name is never looked up.
         // This is the path every texture takes when the menu isn't installed.
