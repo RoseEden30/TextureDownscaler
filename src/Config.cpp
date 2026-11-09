@@ -2,8 +2,6 @@
 
 #include "Logging.h"
 
-#include <algorithm>
-
 namespace {
     Config g_editing;
 
@@ -63,10 +61,6 @@ LogLevel=2
 ; Counts the textures the game loads, per folder. Shown by the in-game menu,
 ; which needs SKSE Menu Framework. Costs a little, so it is off by default.
 TrackUsedFolders=0
-; Only reduce textures once the game uses this much of its video memory
-; budget, in percent. Below that, textures load at full size.
-; 0 reduces them all the time.
-VramThreshold=0
 
 [Textures]
 ; Maximum size per texture type. 0 leaves that type at full size.
@@ -140,14 +134,6 @@ Normal:\clothes\=1024
         return static_cast<std::uint32_t>(value);
     }
 
-    std::uint32_t ClampThreshold(long value) {
-        if (value <= 0) return 0;
-
-        const auto clamped = std::clamp<long>(value, kMinVramThreshold, 100);
-        if (clamped != value) SKSE::log::warn("VramThreshold={} is out of range, using {}", value, clamped);
-        return static_cast<std::uint32_t>(clamped);
-    }
-
     void ReadFolders(const CSimpleIniA& ini, Config& config) {
         CSimpleIniA::TNamesDepend keys;
         if (!ini.GetAllKeys("Folders", keys)) return;
@@ -187,7 +173,6 @@ Normal:\clothes\=1024
 std::atomic<bool>          g_enabled{false};
 std::atomic<bool>          g_trackUsedFolders{false};
 std::atomic<std::uint32_t> g_smallestLimit{0};
-std::atomic<std::uint32_t> g_vramThreshold{0};
 
 Config& EditableConfig() { return g_editing; }
 
@@ -203,7 +188,6 @@ void PublishConfig() {
     g_enabled.store(g_editing.enabled, std::memory_order_relaxed);
     g_trackUsedFolders.store(g_editing.trackUsedFolders, std::memory_order_relaxed);
     g_smallestLimit.store(g_editing.smallestLimit, std::memory_order_relaxed);
-    g_vramThreshold.store(g_editing.vramThreshold, std::memory_order_relaxed);
 }
 
 void LoadConfig() {
@@ -221,7 +205,6 @@ void LoadConfig() {
         config.enabled          = ini.GetBoolValue("General", "Enabled", true);
         config.trackUsedFolders = ini.GetBoolValue("General", "TrackUsedFolders", false);
         config.logLevel = static_cast<std::uint32_t>(ini.GetLongValue("General", "LogLevel", 2));
-        config.vramThreshold    = ClampThreshold(ini.GetLongValue("General", "VramThreshold", 0));
     }
 
     // Applied here so the configured level covers everything that follows.
@@ -242,13 +225,16 @@ void LoadConfig() {
     if (loaded && (ini.GetSectionSize("Suffix") >= 0 || ini.GetSectionSize("Path") >= 0))
         SKSE::log::warn("[Suffix] and [Path] are gone, see [Textures] and [Folders]");
 
+    if (loaded && ini.GetLongValue("General", "VramThreshold", 0) != 0)
+        SKSE::log::warn("VramThreshold is gone, textures are always reduced");
+
     std::string summary;
     for (std::size_t i = 0; i < kCategoryCount; ++i) {
         if (i > 0) summary += ' ';
         summary += std::format("{}={}", kCategoryNames[i], config.maxSize[i]);
     }
 
-    SKSE::log::info("Enabled={} VramThreshold={} {}", config.enabled, config.vramThreshold, summary);
+    SKSE::log::info("Enabled={} {}", config.enabled, summary);
 
     for (const auto& folder : config.folders)
         SKSE::log::info("Folder {}={}", RuleName(folder), folder.maxSize);
@@ -274,7 +260,7 @@ void SaveConfig() {
     ini.SetBoolValue("General", "Enabled", config.enabled);
     ini.SetBoolValue("General", "TrackUsedFolders", config.trackUsedFolders);
     ini.SetLongValue("General", "LogLevel", static_cast<long>(config.logLevel));
-    ini.SetLongValue("General", "VramThreshold", static_cast<long>(config.vramThreshold));
+    ini.Delete("General", "VramThreshold");
 
     for (std::size_t i = 0; i < kCategoryCount; ++i)
         ini.SetLongValue("Textures", std::string(kCategoryNames[i]).c_str(),
